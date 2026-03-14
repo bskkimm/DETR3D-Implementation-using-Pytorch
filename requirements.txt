@@ -4,3 +4,6 @@ numpy
 Pillow
 matplotlib
 jupyter
+pre-commit
+ruff
+black
