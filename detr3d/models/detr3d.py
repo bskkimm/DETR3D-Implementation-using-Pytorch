@@ -1,18 +1,9 @@
 """Top-level DETR3D composition module."""
 
-from dataclasses import dataclass
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
-
-
-@dataclass
-class Detr3DOutputs:
-    cls_scores: torch.Tensor
-    bbox_preds: torch.Tensor
-    init_reference: torch.Tensor
-    inter_references: torch.Tensor
 
 
 class Detr3DModel(nn.Module):
