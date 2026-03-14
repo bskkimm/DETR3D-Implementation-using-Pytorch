@@ -1,0 +1,8 @@
+[project]
+name = "detr3d"
+version = "0.1.0"
+description = "Pure PyTorch DETR3D from scratch"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
