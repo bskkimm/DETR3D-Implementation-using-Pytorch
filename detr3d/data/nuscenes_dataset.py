@@ -83,19 +83,40 @@ def yaw_from_quaternion(q) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def yaw_from_rotation_matrix(rotation: np.ndarray) -> float:
+    return math.atan2(rotation[1, 0], rotation[0, 0])
+
+
 def resize_and_normalize_image(image: Image.Image, image_size=(256, 448)) -> torch.Tensor:
     image = image.resize((image_size[1], image_size[0]))
     array = np.asarray(image, dtype=np.float32) / 255.0
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     array = (array - mean) / std
-    return torch.from_numpy(array).permute(2, 0, 1)
+    return torch.tensor(array, dtype=torch.float32).permute(2, 0, 1)
 
 
 def category_to_detection_class(category_name: str) -> str | None:
-    for class_name in NUSCENES_CLASSES:
-        if category_name.startswith(class_name):
-            return class_name
+    if category_name.startswith("vehicle.car"):
+        return "car"
+    if category_name.startswith("vehicle.truck"):
+        return "truck"
+    if category_name.startswith("vehicle.bus"):
+        return "bus"
+    if category_name.startswith("vehicle.trailer"):
+        return "trailer"
+    if category_name.startswith("vehicle.construction"):
+        return "construction_vehicle"
+    if category_name.startswith("human.pedestrian"):
+        return "pedestrian"
+    if category_name.startswith("vehicle.motorcycle"):
+        return "motorcycle"
+    if category_name.startswith("vehicle.bicycle"):
+        return "bicycle"
+    if category_name.startswith("movable_object.trafficcone"):
+        return "traffic_cone"
+    if category_name.startswith("movable_object.barrier"):
+        return "barrier"
     return None
 
 
@@ -181,29 +202,40 @@ class NuScenesDetr3DDataset(Dataset):
 
     def _build_lidar2img(self, camera_record: dict) -> np.ndarray:
         calibrated_sensor = self.tables.calibrated_sensor_by_token[camera_record["calibrated_sensor_token"]]
-        ego_pose = self.tables.ego_pose_by_token[camera_record["ego_pose_token"]]
 
         cam_to_ego = pose_to_matrix(calibrated_sensor["rotation"], calibrated_sensor["translation"])
-        ego_to_global = pose_to_matrix(ego_pose["rotation"], ego_pose["translation"])
-        global_to_ego = invert_se3(ego_to_global)
         ego_to_cam = invert_se3(cam_to_ego)
 
         intrinsic = np.eye(4, dtype=np.float32)
         intrinsic[:3, :3] = np.asarray(calibrated_sensor["camera_intrinsic"], dtype=np.float32)
-        return intrinsic @ ego_to_cam @ global_to_ego
+        return intrinsic @ ego_to_cam
+
+    def _transform_global_ann_to_ego(self, ann: dict, ego_pose: dict) -> tuple[np.ndarray, float]:
+        ego_to_global = pose_to_matrix(ego_pose["rotation"], ego_pose["translation"])
+        global_to_ego = invert_se3(ego_to_global)
+
+        center_global = np.ones(4, dtype=np.float32)
+        center_global[:3] = np.asarray(ann["translation"], dtype=np.float32)
+        center_ego = global_to_ego @ center_global
+
+        ann_rotation_global = quaternion_to_rotation_matrix(ann["rotation"])
+        ann_rotation_ego = global_to_ego[:3, :3] @ ann_rotation_global
+        yaw_ego = yaw_from_rotation_matrix(ann_rotation_ego)
+        return center_ego[:3], yaw_ego
 
     def _build_gt_targets(self, sample_record: dict) -> tuple[torch.Tensor, torch.Tensor]:
         boxes = []
         labels = []
+        ego_pose = self.tables.ego_pose_by_token[self._get_camera_records(sample_record)["CAM_FRONT"]["ego_pose_token"]]
         for ann in self.tables.annotations_by_sample_token.get(sample_record["token"], []):
             instance = self.tables.instance_by_token[ann["instance_token"]]
             category = self.tables.category_by_token[instance["category_token"]]["name"]
             det_class = category_to_detection_class(category)
             if det_class is None:
                 continue
-            x, y, z = ann["translation"]
+            center_ego, yaw = self._transform_global_ann_to_ego(ann, ego_pose)
+            x, y, z = center_ego.tolist()
             w, l, h = ann["size"]
-            yaw = yaw_from_quaternion(ann["rotation"])
             boxes.append([x, y, z, w, l, h, yaw])
             labels.append(CLASS_TO_ID[det_class])
 
@@ -223,7 +255,7 @@ class NuScenesDetr3DDataset(Dataset):
             image_path = self.dataroot / record["filename"]
             image = Image.open(image_path).convert("RGB")
             images.append(resize_and_normalize_image(image, image_size=self.image_size))
-            lidar2img.append(torch.from_numpy(self._build_lidar2img(record)))
+            lidar2img.append(torch.tensor(self._build_lidar2img(record), dtype=torch.float32))
             image_shape.append(torch.tensor(self.image_size, dtype=torch.float32))
 
         gt_boxes_ego, gt_labels = self._build_gt_targets(sample_record)
