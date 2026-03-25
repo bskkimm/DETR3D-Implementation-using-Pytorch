@@ -9,43 +9,47 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class FPNBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.lateral = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        self.output = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.output(self.lateral(x))
-
-
 class ImageFPN(nn.Module):
     """Build a top-down feature pyramid from multi-view backbone features."""
 
     def __init__(
         self,
-        in_channels: Iterable[int] = (128, 256, 512),
+        in_channels: Iterable[int] = (512, 1024, 2048),
         out_channels: int = 256,
-        out_names: Iterable[str] = ("p3", "p4", "p5"),
+        out_names: Iterable[str] = ("p3", "p4", "p5", "p6"),
     ):
         super().__init__()
         self.out_names = list(out_names)
-        self.blocks = nn.ModuleList([FPNBlock(ch, out_channels) for ch in in_channels])
+        self.lateral_convs = nn.ModuleList([nn.Conv2d(ch, out_channels, kernel_size=1) for ch in in_channels])
+        self.output_convs = nn.ModuleList(
+            [nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1) for _ in in_channels]
+        )
+        self.extra_conv = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, padding=1)
 
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         stage_names = sorted(features.keys())
-        pyramid: Dict[str, torch.Tensor] = {}
-        top_down = None
-
-        for name, block, out_name in zip(reversed(stage_names), reversed(self.blocks), reversed(self.out_names)):
+        flat_feats = []
+        batch, num_cams = next(iter(features.values())).shape[:2]
+        for name in stage_names:
             feat = features[name]
-            batch, num_cams, channels, height, width = feat.shape
-            flat = feat.reshape(batch * num_cams, channels, height, width)
-            lateral = block.lateral(flat)
-            if top_down is not None:
-                lateral = lateral + F.interpolate(top_down, size=lateral.shape[-2:], mode="nearest")
-            out = block.output(lateral)
-            top_down = lateral
-            pyramid[out_name] = out.reshape(batch, num_cams, out.shape[1], out.shape[2], out.shape[3])
+            # FPN is defined over 2D feature maps, so flatten cameras into the batch axis:
+            # [B, N_cam, C, H, W] -> [B * N_cam, C, H, W].
+            flat_feats.append(feat.reshape(batch * num_cams, feat.shape[2], feat.shape[3], feat.shape[4]))
 
-        return {name: pyramid[name] for name in self.out_names}
+        # Lateral 1x1 convolutions unify channel width, e.g. 512/1024/2048 -> 256.
+        laterals = [conv(feat) for conv, feat in zip(self.lateral_convs, flat_feats)]
+        for idx in range(len(laterals) - 1, 0, -1):
+            # Standard top-down FPN recursion:
+            # P_n = lateral(C_n) + upsample(P_{n+1})
+            laterals[idx - 1] = laterals[idx - 1] + F.interpolate(laterals[idx], size=laterals[idx - 1].shape[-2:], mode="nearest")
+
+        # The 3x3 output convolutions smooth the fused maps after upsampling/addition.
+        outputs = [conv(feat) for conv, feat in zip(self.output_convs, laterals)]
+        # P6 is an extra coarser level built by stride-2 downsampling of P5.
+        outputs.append(self.extra_conv(outputs[-1]))
+
+        pyramid: Dict[str, torch.Tensor] = {}
+        for out_name, feat in zip(self.out_names, outputs):
+            # Restore [B, N_cam, C, H_l, W_l] layout for downstream multi-view sampling.
+            pyramid[out_name] = feat.reshape(batch, num_cams, feat.shape[1], feat.shape[2], feat.shape[3])
+        return pyramid

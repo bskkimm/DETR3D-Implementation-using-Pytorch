@@ -6,84 +6,58 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
+from torchvision import models
+from torchvision.models import ResNet101_Weights
+from torchvision.ops import DeformConv2d
 
 
-class ConvNormAct(nn.Sequential):
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
-        super().__init__(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
+class DeformConv2dPack(nn.Module):
+    """Drop-in replacement for a ResNet 3x3 conv using learned offsets."""
 
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+    def __init__(self, conv: nn.Conv2d):
         super().__init__()
-        self.conv1 = ConvNormAct(in_channels, out_channels, stride=stride)
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+        kernel_h, kernel_w = conv.kernel_size
+        # A deformable kxk kernel predicts 2 offsets per sampling location, so the
+        # offset branch needs `2 * k * k` output channels.
+        offset_channels = 2 * kernel_h * kernel_w
+        self.offset_conv = nn.Conv2d(
+            in_channels=conv.in_channels,
+            out_channels=offset_channels,
+            kernel_size=conv.kernel_size,
+            stride=conv.stride,
+            padding=conv.padding,
+            dilation=conv.dilation,
+            groups=1,
+            bias=True,
         )
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-        else:
-            self.shortcut = nn.Identity()
-        self.relu = nn.ReLU(inplace=True)
+        self.deform_conv = DeformConv2d(
+            in_channels=conv.in_channels,
+            out_channels=conv.out_channels,
+            kernel_size=kernel_h,
+            stride=conv.stride[0],
+            padding=conv.padding[0],
+            dilation=conv.dilation[0],
+            groups=conv.groups,
+            bias=conv.bias is not None,
+        )
+        with torch.no_grad():
+            # Start from the pretrained dense conv weights and zero offsets. This makes
+            # the deformable conv initially behave like the original ResNet conv.
+            self.deform_conv.weight.copy_(conv.weight)
+            if conv.bias is not None and self.deform_conv.bias is not None:
+                self.deform_conv.bias.copy_(conv.bias)
+            nn.init.zeros_(self.offset_conv.weight)
+            nn.init.zeros_(self.offset_conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.shortcut(x)
-        out = self.conv1(x)
-        out = self.conv2(out)
-        return self.relu(out + residual)
-
-
-class TinyResNetBackbone(nn.Module):
-    """A compact ResNet-style backbone for multi-view DETR3D experiments."""
-
-    def __init__(self, in_channels: int = 3, base_channels: int = 64):
-        super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, base_channels, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(base_channels),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.stage2 = nn.Sequential(
-            ResidualBlock(base_channels, base_channels),
-            ResidualBlock(base_channels, base_channels),
-        )
-        self.stage3 = nn.Sequential(
-            ResidualBlock(base_channels, base_channels * 2, stride=2),
-            ResidualBlock(base_channels * 2, base_channels * 2),
-        )
-        self.stage4 = nn.Sequential(
-            ResidualBlock(base_channels * 2, base_channels * 4, stride=2),
-            ResidualBlock(base_channels * 4, base_channels * 4),
-        )
-        self.stage5 = nn.Sequential(
-            ResidualBlock(base_channels * 4, base_channels * 8, stride=2),
-            ResidualBlock(base_channels * 8, base_channels * 8),
-        )
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        x = self.stem(x)
-        stage2 = self.stage2(x)
-        stage3 = self.stage3(stage2)
-        stage4 = self.stage4(stage3)
-        stage5 = self.stage5(stage4)
-        return {
-            "stage3": stage3,
-            "stage4": stage4,
-            "stage5": stage5,
-        }
+        # `offset`: [B, 2 * k * k, H_out, W_out] encodes xy displacements for each kernel
+        # sampling position at every output spatial location.
+        offset = self.offset_conv(x)
+        return self.deform_conv(x, offset)
 
 
 class MultiViewImageBackbone(nn.Module):
-    """Apply the same image backbone to all camera views.
+    """Apply a torchvision ResNet backbone to all camera views.
 
     Input:
         images: [B, N, 3, H, W]
@@ -91,15 +65,81 @@ class MultiViewImageBackbone(nn.Module):
         dict[str, Tensor]: [B, N, C, H_l, W_l] per stage
     """
 
-    def __init__(self, in_channels: int = 3, base_channels: int = 64):
+    def __init__(
+        self,
+        variant: str = "resnet101",
+        pretrained: bool = True,
+        frozen_stages: int = 1,
+        norm_eval: bool = True,
+    ):
         super().__init__()
-        self.backbone = TinyResNetBackbone(in_channels=in_channels, base_channels=base_channels)
+        if variant != "resnet101":
+            raise ValueError(f"Unsupported backbone variant: {variant}")
+
+        weights = ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
+        backbone = models.resnet101(weights=weights)
+        self.stem = nn.Sequential(
+            backbone.conv1,
+            backbone.bn1,
+            backbone.relu,
+            backbone.maxpool,
+        )
+        self.stage2 = backbone.layer1
+        self.stage3 = backbone.layer2
+        self.stage4 = backbone.layer3
+        self.stage5 = backbone.layer4
+        self._convert_stage_to_deformable(self.stage4)
+        self._convert_stage_to_deformable(self.stage5)
+        self.frozen_stages = frozen_stages
+        self.norm_eval = norm_eval
+        self._freeze_stages()
+
+    @staticmethod
+    def _convert_stage_to_deformable(stage: nn.Sequential) -> None:
+        for block in stage:
+            if hasattr(block, "conv2") and isinstance(block.conv2, nn.Conv2d):
+                block.conv2 = DeformConv2dPack(block.conv2)
+
+    def _freeze_stages(self) -> None:
+        if self.frozen_stages >= 0:
+            self.stem.eval()
+            for param in self.stem.parameters():
+                param.requires_grad = False
+        stages = [self.stage2, self.stage3, self.stage4, self.stage5]
+        for idx, stage in enumerate(stages, start=1):
+            if self.frozen_stages >= idx:
+                stage.eval()
+                for param in stage.parameters():
+                    param.requires_grad = False
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self._freeze_stages()
+        if mode and self.norm_eval:
+            for module in self.modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.eval()
+        return self
 
     def forward(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:
         batch, num_cams, channels, height, width = images.shape
+        # Flatten cameras into the batch axis so a standard 2D ResNet can process all
+        # views in one pass: [B, N_cam, 3, H, W] -> [B * N_cam, 3, H, W].
         flat = images.reshape(batch * num_cams, channels, height, width)
-        features = self.backbone(flat)
 
+        x = self.stem(flat)
+        stage2 = self.stage2(x)
+        stage3 = self.stage3(stage2)
+        stage4 = self.stage4(stage3)
+        stage5 = self.stage5(stage4)
+
+        # Keep C3/C4/C5-style features. They are reshaped back so downstream DETR3D code
+        # can still index features by batch and camera separately.
+        features = {
+            "stage3": stage3,
+            "stage4": stage4,
+            "stage5": stage5,
+        }
         multi_view = {}
         for name, feat in features.items():
             _, out_channels, out_height, out_width = feat.shape

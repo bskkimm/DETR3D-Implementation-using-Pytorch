@@ -76,19 +76,13 @@ def invert_se3(matrix: np.ndarray) -> np.ndarray:
     return inv
 
 
-def yaw_from_quaternion(q) -> float:
-    w, x, y, z = q
-    siny_cosp = 2 * (w * z + x * y)
-    cosy_cosp = 1 - 2 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
 def yaw_from_rotation_matrix(rotation: np.ndarray) -> float:
     return math.atan2(rotation[1, 0], rotation[0, 0])
 
 
-def resize_and_normalize_image(image: Image.Image, image_size=(256, 448)) -> torch.Tensor:
-    image = image.resize((image_size[1], image_size[0]))
+def resize_and_normalize_image(image: Image.Image, image_size=(900, 1600)) -> torch.Tensor:
+    if image_size is not None and image.size != (image_size[1], image_size[0]):
+        image = image.resize((image_size[1], image_size[0]))
     array = np.asarray(image, dtype=np.float32) / 255.0
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -123,6 +117,7 @@ def category_to_detection_class(category_name: str) -> str | None:
 @dataclass
 class NuScenesTables:
     samples: List[dict]
+    sample_by_token: Dict[str, dict]
     sample_data_by_token: Dict[str, dict]
     sensor_by_token: Dict[str, dict]
     camera_data_by_sample_token: Dict[str, Dict[str, dict]]
@@ -162,6 +157,7 @@ class NuScenesTables:
 
         return cls(
             samples=sample_table,
+            sample_by_token=build_index(sample_table),
             sample_data_by_token=build_index(sample_data_table),
             sensor_by_token=sensor_by_token,
             camera_data_by_sample_token=camera_data_by_sample_token,
@@ -181,7 +177,7 @@ class NuScenesDetr3DDataset(Dataset):
         self,
         dataroot: str | Path,
         version: str = "v1.0-trainval",
-        image_size: tuple[int, int] = (256, 448),
+        image_size: tuple[int, int] = (900, 1600),
         max_samples: int | None = None,
     ):
         self.dataroot = Path(dataroot)
@@ -200,52 +196,107 @@ class NuScenesDetr3DDataset(Dataset):
             raise KeyError(f"Missing camera keyframes for sample {sample_record['token']}: {missing}")
         return camera_records
 
-    def _build_lidar2img(self, camera_record: dict) -> np.ndarray:
+    def _get_lidar_record(self, sample_record: dict) -> dict:
+        sample_token = sample_record["token"]
+        for row in self.tables.sample_data_by_token.values():
+            if row.get("sample_token") != sample_token:
+                continue
+            calibrated = self.tables.calibrated_sensor_by_token[row["calibrated_sensor_token"]]
+            sensor = self.tables.sensor_by_token[calibrated["sensor_token"]]
+            if sensor.get("channel") == "LIDAR_TOP":
+                return row
+        raise KeyError(f"Missing LIDAR_TOP for sample {sample_token}")
+
+    def _sensor_to_global(self, sample_data_record: dict) -> np.ndarray:
+        calibrated_sensor = self.tables.calibrated_sensor_by_token[sample_data_record["calibrated_sensor_token"]]
+        ego_pose = self.tables.ego_pose_by_token[sample_data_record["ego_pose_token"]]
+        sensor_to_ego = pose_to_matrix(calibrated_sensor["rotation"], calibrated_sensor["translation"])
+        ego_to_global = pose_to_matrix(ego_pose["rotation"], ego_pose["translation"])
+        return ego_to_global @ sensor_to_ego
+
+    def _build_lidar2img(self, lidar_record: dict, camera_record: dict) -> np.ndarray:
+        lidar_to_global = self._sensor_to_global(lidar_record)
+        cam_to_global = self._sensor_to_global(camera_record)
+        global_to_cam = invert_se3(cam_to_global)
+        lidar_to_cam = global_to_cam @ lidar_to_global
+
         calibrated_sensor = self.tables.calibrated_sensor_by_token[camera_record["calibrated_sensor_token"]]
-
-        cam_to_ego = pose_to_matrix(calibrated_sensor["rotation"], calibrated_sensor["translation"])
-        ego_to_cam = invert_se3(cam_to_ego)
-
         intrinsic = np.eye(4, dtype=np.float32)
         intrinsic[:3, :3] = np.asarray(calibrated_sensor["camera_intrinsic"], dtype=np.float32)
-        return intrinsic @ ego_to_cam
+        return intrinsic @ lidar_to_cam
 
-    def _transform_global_ann_to_ego(self, ann: dict, ego_pose: dict) -> tuple[np.ndarray, float]:
-        ego_to_global = pose_to_matrix(ego_pose["rotation"], ego_pose["translation"])
-        global_to_ego = invert_se3(ego_to_global)
+    def _annotation_timestamp_seconds(self, ann: dict) -> float:
+        sample_record = self.tables.sample_by_token[ann["sample_token"]]
+        return float(sample_record["timestamp"]) * 1e-6
+
+    def _compute_ann_velocity_global(self, ann: dict) -> np.ndarray:
+        current_translation = np.asarray(ann["translation"], dtype=np.float32)
+        current_time = self._annotation_timestamp_seconds(ann)
+        prev_token = ann.get("prev")
+        next_token = ann.get("next")
+
+        prev_ann = self.tables.annotation_by_token.get(prev_token) if prev_token else None
+        next_ann = self.tables.annotation_by_token.get(next_token) if next_token else None
+
+        if prev_ann is not None and next_ann is not None:
+            prev_translation = np.asarray(prev_ann["translation"], dtype=np.float32)
+            next_translation = np.asarray(next_ann["translation"], dtype=np.float32)
+            prev_time = self._annotation_timestamp_seconds(prev_ann)
+            next_time = self._annotation_timestamp_seconds(next_ann)
+            dt = max(next_time - prev_time, 1e-6)
+            return (next_translation - prev_translation) / dt
+        if prev_ann is not None:
+            prev_translation = np.asarray(prev_ann["translation"], dtype=np.float32)
+            prev_time = self._annotation_timestamp_seconds(prev_ann)
+            dt = max(current_time - prev_time, 1e-6)
+            return (current_translation - prev_translation) / dt
+        if next_ann is not None:
+            next_translation = np.asarray(next_ann["translation"], dtype=np.float32)
+            next_time = self._annotation_timestamp_seconds(next_ann)
+            dt = max(next_time - current_time, 1e-6)
+            return (next_translation - current_translation) / dt
+        return np.zeros(3, dtype=np.float32)
+
+    def _transform_global_ann_to_lidar(self, ann: dict, lidar_record: dict) -> tuple[np.ndarray, float, np.ndarray]:
+        lidar_to_global = self._sensor_to_global(lidar_record)
+        global_to_lidar = invert_se3(lidar_to_global)
 
         center_global = np.ones(4, dtype=np.float32)
         center_global[:3] = np.asarray(ann["translation"], dtype=np.float32)
-        center_ego = global_to_ego @ center_global
+        center_lidar = global_to_lidar @ center_global
 
         ann_rotation_global = quaternion_to_rotation_matrix(ann["rotation"])
-        ann_rotation_ego = global_to_ego[:3, :3] @ ann_rotation_global
-        yaw_ego = yaw_from_rotation_matrix(ann_rotation_ego)
-        return center_ego[:3], yaw_ego
+        ann_rotation_lidar = global_to_lidar[:3, :3] @ ann_rotation_global
+        yaw_lidar = yaw_from_rotation_matrix(ann_rotation_lidar)
 
-    def _build_gt_targets(self, sample_record: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        velocity_global = self._compute_ann_velocity_global(ann)
+        velocity_lidar = global_to_lidar[:3, :3] @ velocity_global
+        return center_lidar[:3], yaw_lidar, velocity_lidar[:2]
+
+    def _build_gt_targets(self, sample_record: dict, lidar_record: dict) -> tuple[torch.Tensor, torch.Tensor]:
         boxes = []
         labels = []
-        ego_pose = self.tables.ego_pose_by_token[self._get_camera_records(sample_record)["CAM_FRONT"]["ego_pose_token"]]
         for ann in self.tables.annotations_by_sample_token.get(sample_record["token"], []):
             instance = self.tables.instance_by_token[ann["instance_token"]]
             category = self.tables.category_by_token[instance["category_token"]]["name"]
             det_class = category_to_detection_class(category)
             if det_class is None:
                 continue
-            center_ego, yaw = self._transform_global_ann_to_ego(ann, ego_pose)
-            x, y, z = center_ego.tolist()
+            center_lidar, yaw, velocity_lidar = self._transform_global_ann_to_lidar(ann, lidar_record)
+            x, y, z = center_lidar.tolist()
             w, l, h = ann["size"]
-            boxes.append([x, y, z, w, l, h, yaw])
+            vx, vy = velocity_lidar.tolist()
+            boxes.append([x, y, z, w, l, h, yaw, vx, vy])
             labels.append(CLASS_TO_ID[det_class])
 
         if not boxes:
-            return torch.zeros((0, 7), dtype=torch.float32), torch.zeros((0,), dtype=torch.long)
+            return torch.zeros((0, 9), dtype=torch.float32), torch.zeros((0,), dtype=torch.long)
         return torch.tensor(boxes, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
     def __getitem__(self, index: int) -> dict:
         sample_record = self.samples[index]
         camera_records = self._get_camera_records(sample_record)
+        lidar_record = self._get_lidar_record(sample_record)
 
         images = []
         lidar2img = []
@@ -255,10 +306,10 @@ class NuScenesDetr3DDataset(Dataset):
             image_path = self.dataroot / record["filename"]
             image = Image.open(image_path).convert("RGB")
             images.append(resize_and_normalize_image(image, image_size=self.image_size))
-            lidar2img.append(torch.tensor(self._build_lidar2img(record), dtype=torch.float32))
+            lidar2img.append(torch.tensor(self._build_lidar2img(lidar_record, record), dtype=torch.float32))
             image_shape.append(torch.tensor(self.image_size, dtype=torch.float32))
 
-        gt_boxes_ego, gt_labels = self._build_gt_targets(sample_record)
+        gt_boxes_lidar, gt_labels = self._build_gt_targets(sample_record, lidar_record)
         return {
             "images": torch.stack(images, dim=0),
             "img_metas": {
@@ -266,7 +317,8 @@ class NuScenesDetr3DDataset(Dataset):
                 "image_shape": torch.stack(image_shape, dim=0),
                 "sample_token": sample_record["token"],
             },
-            "gt_boxes_ego": gt_boxes_ego,
+            "gt_boxes_ego": gt_boxes_lidar,
+            "gt_boxes_lidar": gt_boxes_lidar,
             "gt_labels": gt_labels,
         }
 

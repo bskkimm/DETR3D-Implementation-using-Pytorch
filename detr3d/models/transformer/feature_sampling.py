@@ -61,17 +61,24 @@ def feature_sampling(
     _, num_cams, channels, _, _ = mlvl_feats[0].shape
     num_levels = len(mlvl_feats)
     device = reference_points.device
-    dtype = reference_points.dtype
+    feat_dtype = mlvl_feats[0].dtype
+    geom_dtype = torch.float32
 
-    ref_points_3d = denormalize_reference_points(reference_points, pc_range)
+    # Reference points are trained in normalized xyz space; projection needs metric-space
+    # coordinates in the LiDAR frame, so convert them back using the configured pc_range.
+    ref_points_3d = denormalize_reference_points(reference_points.to(dtype=geom_dtype), pc_range)
     ref_points_homo = torch.cat([ref_points_3d, torch.ones_like(ref_points_3d[..., :1])], dim=-1)
 
+    # Build [B, N_cam, 4, 4] projection matrices and per-camera image shapes.
     matrix_key = "lidar2img" if "lidar2img" in img_metas[0] else "ego2img"
-    proj = _stack_projection_matrices(img_metas, matrix_key, device, dtype)
+    proj = _stack_projection_matrices(img_metas, matrix_key, device, geom_dtype)
     if proj.ndim == 3:
         proj = proj.unsqueeze(1).repeat(1, num_cams, 1, 1)
-    image_shapes = _stack_image_shapes(img_metas, num_cams, device, dtype)
+    image_shapes = _stack_image_shapes(img_metas, num_cams, device, geom_dtype)
 
+    # `points`:      [B, 1, Q, 4, 1]
+    # `proj_points`: [B, N_cam, Q, 4]
+    # Each query center is projected into every camera independently.
     points = ref_points_homo[:, None, :, :, None]
     proj_points = torch.matmul(proj[:, :, None], points).squeeze(-1)
 
@@ -83,18 +90,26 @@ def feature_sampling(
     norm_y = xy[..., 1] / height.clamp(min=1.0)
     grid = torch.stack([norm_x * 2 - 1, norm_y * 2 - 1], dim=-1)
 
+    # A projection is valid only if it lands in front of the camera and inside the
+    # normalized [-1, 1] image window expected by `grid_sample`.
     valid = (depth[..., 0] > 1e-5)
     valid = valid & (grid[..., 0] >= -1.0) & (grid[..., 0] <= 1.0) & (grid[..., 1] >= -1.0) & (grid[..., 1] <= 1.0)
 
     sampled_levels = []
     masks = []
     for level_feat in mlvl_feats:
-        feat = level_feat.reshape(batch * num_cams, channels, level_feat.shape[-2], level_feat.shape[-1])
+        # Flatten camera dimension so one `grid_sample` call can process all cameras at
+        # this pyramid level: [B, N_cam, C, H, W] -> [B * N_cam, C, H, W].
+        feat = level_feat.reshape(batch * num_cams, channels, level_feat.shape[-2], level_feat.shape[-1]).float()
         level_grid = grid.reshape(batch * num_cams, num_queries, 1, 2)
+
+        # Sample exactly one 2D point per query per camera per level. The output layout
+        # is then reshaped back to [B, C, Q, N_cam, 1] so the caller can reduce over
+        # cameras and levels with the validity mask.
         sampled = F.grid_sample(feat, level_grid, mode="bilinear", padding_mode="zeros", align_corners=False)
-        sampled = sampled.reshape(batch, num_cams, channels, num_queries, 1).permute(0, 2, 3, 1, 4)
+        sampled = sampled.reshape(batch, num_cams, channels, num_queries, 1).permute(0, 2, 3, 1, 4).to(feat_dtype)
         sampled_levels.append(sampled)
-        masks.append(valid.permute(0, 2, 1)[:, None, :, :, None].to(dtype=dtype))
+        masks.append(valid.permute(0, 2, 1)[:, None, :, :, None].to(dtype=feat_dtype))
 
     sampled_feats = torch.stack(sampled_levels, dim=-1)
     mask = torch.stack(masks, dim=-1)

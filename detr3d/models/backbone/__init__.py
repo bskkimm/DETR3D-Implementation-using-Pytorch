@@ -1,3 +1,3 @@
-from .image_backbone import MultiViewImageBackbone, TinyResNetBackbone
+from .image_backbone import MultiViewImageBackbone
 
-__all__ = ["MultiViewImageBackbone", "TinyResNetBackbone"]
+__all__ = ["MultiViewImageBackbone"]

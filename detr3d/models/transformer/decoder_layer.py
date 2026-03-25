@@ -16,7 +16,7 @@ class Detr3DDecoderLayer(nn.Module):
         embed_dims: int = 256,
         num_heads: int = 8,
         num_cams: int = 6,
-        num_levels: int = 3,
+        num_levels: int = 4,
         dropout: float = 0.1,
         pc_range = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
     ):
@@ -48,10 +48,9 @@ class Detr3DDecoderLayer(nn.Module):
         reference_points: torch.Tensor,
         img_metas: List[Dict],
     ) -> torch.Tensor:
-        q = query + query_pos
-        self_attended, _ = self.self_attn(q, q, query)
-        query = self.norm1(query + self.dropout(self_attended))
-
+        # 1) Project/sampling step driven by the current layer's predicted centers.
+        # The sampled visual feature is added residually to each query, matching the
+        # paper's `q_{l+1} = f_l + q_l` intuition before object-object interaction.
         cross = self.cross_attn(
             query=query,
             mlvl_feats=mlvl_feats,
@@ -59,7 +58,14 @@ class Detr3DDecoderLayer(nn.Module):
             img_metas=img_metas,
             query_pos=query_pos,
         )
-        query = self.norm2(query + self.dropout(cross))
+        query = self.norm1(query + self.dropout(cross))
 
+        # 2) Multi-head self-attention lets queries exchange object-level context after
+        # each query has gathered its own image evidence.
+        q = query + query_pos
+        self_attended, _ = self.self_attn(q, q, query)
+        query = self.norm2(query + self.dropout(self_attended))
+
+        # 3) Standard transformer feed-forward refinement.
         ff = self.ffn(query)
         return self.norm3(query + self.dropout(ff))
