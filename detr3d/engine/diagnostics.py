@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-import matplotlib.pyplot as plt
 import torch
 
 from detr3d.data.nuscenes_dataset import CAMERA_NAMES, NUSCENES_CLASSES
@@ -234,6 +233,8 @@ def save_overlay_figure(
     *,
     original_image_shapes: list[tuple[int, int] | None] | None = None,
 ) -> None:
+    import matplotlib.pyplot as plt
+
     gt_boxes = sample.get("gt_boxes_lidar", sample["gt_boxes_ego"]).cpu()
     pred_corners = box7_to_corners(pred_boxes)
     gt_corners = box7_to_corners(gt_boxes)
@@ -262,6 +263,8 @@ def save_overlay_figure(
 
 
 def save_bev_figure(gt_boxes: torch.Tensor, pred_boxes: torch.Tensor, pred_scores: torch.Tensor, output_path: Path) -> None:
+    import matplotlib.pyplot as plt
+
     fig = plt.figure(figsize=(8, 8))
     ax = plt.gca()
     draw_bev_boxes(ax, gt_boxes, color="lime", label="GT")

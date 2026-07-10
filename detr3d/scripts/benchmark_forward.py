@@ -19,7 +19,46 @@ from torch.utils.data import DataLoader
 
 from detr3d.data import NuScenesDetr3DDataset, detr3d_collate
 from detr3d.engine.trainer import move_batch_to_device
+from detr3d.models import Detr3DModel
+from detr3d.models.backbone import MultiViewImageBackbone
+from detr3d.models.heads import Detr3DHead
 from detr3d.models.losses import Detr3DLoss
+from detr3d.models.neck import ImageFPN
+from detr3d.models.transformer import Detr3DTransformer
+
+
+def build_benchmark_model(num_queries: int, backbone_name: str, pretrained_backbone: bool) -> Detr3DModel:
+    return Detr3DModel(
+        backbone=MultiViewImageBackbone(variant=backbone_name, pretrained=pretrained_backbone),
+        neck=ImageFPN(),
+        transformer=Detr3DTransformer(num_queries=num_queries, num_levels=4),
+        head=Detr3DHead(num_decoder_layers=6),
+    )
+
+
+def build_benchmark_optimizer(
+    model: Detr3DModel,
+    lr: float,
+    backbone_lr_mult: float,
+    weight_decay: float,
+) -> torch.optim.Optimizer:
+    backbone_params = []
+    other_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if name.startswith("backbone."):
+            backbone_params.append(param)
+        else:
+            other_params.append(param)
+    return torch.optim.AdamW(
+        [
+            {"params": other_params, "lr": lr, "weight_decay": weight_decay},
+            {"params": backbone_params, "lr": lr * backbone_lr_mult, "weight_decay": weight_decay},
+        ],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,9 +152,7 @@ def main() -> None:
     scaler = None
     amp_enabled = args.use_amp and device.type == "cuda"
     if not args.data_only:
-        from train import build_model, build_optimizer
-
-        model = build_model(
+        model = build_benchmark_model(
             num_queries=args.num_queries,
             backbone_name=args.backbone,
             pretrained_backbone=not args.disable_pretrained_backbone,
@@ -127,7 +164,7 @@ def main() -> None:
             gamma=args.focal_gamma,
             use_auxiliary_losses=not args.disable_auxiliary_losses,
         )
-        optimizer = build_optimizer(
+        optimizer = build_benchmark_optimizer(
             model=model,
             lr=args.lr,
             backbone_lr_mult=args.backbone_lr_mult,

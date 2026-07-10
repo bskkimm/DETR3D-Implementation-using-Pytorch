@@ -123,6 +123,50 @@ python detr3d/scripts/benchmark_forward.py \
 
 Only after a configuration has good benchmark throughput should it be used for `8`, `32`, and `64` sample small-training runs.
 
+Measured on the current 32-logical-CPU host and RTX PRO 6000 Blackwell 96GB GPU, the best practical starting points are:
+
+- throughput-oriented small training: `832x1472`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
+- official-resolution parity check: `900x1600`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
+
+Observed benchmark summaries:
+
+- `832x1472`, batch `8`, queries `900`: about `4.28` samples/sec, `70.7GB` CUDA reserved
+- `900x1600`, batch `8`, queries `900`: about `3.76` samples/sec, `86.2GB` CUDA reserved
+- `900x1600`, batch `9`, queries `900`: fits at about `91.8GB` reserved but is slower and leaves little headroom, so avoid it for normal long runs
+- dataloader workers: `12-16` workers remove CPU wait after warmup; prefer `16` for heavy runs unless the rest of the system needs CPU headroom
+
+Recommended first small-training command after the one-sample regression check:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 8 \
+  --epochs 12 \
+  --num-workers 16 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --use-amp \
+  --image-height 832 \
+  --image-width 1472 \
+  --backbone resnet101 \
+  --num-queries 900 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_64_832x1472_q900_bs8 \
+  --save-every 2 \
+  --num-eval-samples 8 \
+  --eval-every 2 \
+  --eval-score-threshold 0.005 \
+  --eval-max-boxes 100
+```
+
+If that is stable and promising, run the official-resolution parity variant with `--image-height 900 --image-width 1600 --output-dir outputs/train_64_900x1600_q900_bs8`.
+
 ## Older Paper-Oriented Reference
 
 The sections below describe the older paper-oriented package setup and should not be treated as the primary regression baseline when they conflict with the canonical settings above.
