@@ -51,6 +51,11 @@ Inside the architecture section, each major component is isolated to its own cel
 - Existing scratch implementations at the repo root are still present.
 - The next practical step is to migrate real implementations into the new package modules one by one.
 
+## Project Guidance
+
+- Read `AGENTS.md` before making code changes in this repository.
+- Use `COMMAND_GUIDE.md` for canonical training, evaluation, and regression commands.
+
 ## Dataset Validation
 
 Validate the extracted nuScenes root before training:

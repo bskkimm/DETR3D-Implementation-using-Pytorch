@@ -1,5 +1,72 @@
 # DETR3D Command Guide
 
+This guide includes two tracks:
+- the current canonical regression baseline used for reproduction on `exp/official-copy`
+- older paper-oriented commands kept as secondary reference
+
+## Branch Phase Plan
+
+- `exp/official-copy` is the stable official-like baseline branch.
+- Use a small-training/search branch, currently `exp/official-copy-experiments`, to find the best setup before broad training.
+- Commit and push coherent experiment steps on the small-training branch.
+- Once the best small-training setup is selected, create a full-training branch such as `exp/official-copy-full-training` from that accepted commit.
+- Keep full-training changes separate from exploratory small-training changes.
+
+## Current Canonical Baseline
+
+For current reproduction and regression checks, use the seeded one-sample runner from the March 23 handoff note instead of the older paper-oriented defaults below.
+
+Canonical conditions:
+- baseline branch: `exp/official-copy`
+- active small-training branch: `exp/official-copy-experiments`
+- script: `python detr3d/scripts/overfit_one_batch.py`
+- dataset: `--dataroot /home/user/datasets/nuscenes --version v1.0-trainval`
+- sample: `--sample-index 0`
+- image size: `--image-height 832 --image-width 1472`
+- queries: `--num-queries 100`
+- epochs: `--epochs 60`
+- optimizer: `--lr 2e-4 --backbone-lr-mult 0.1 --weight-decay 0.01`
+- loss/classification: `--loss-cls-weight 1.0 --focal-alpha 0.5 --focal-gamma 1.5`
+- scheduler: `--scheduler none`
+- stability: `--max-boxes 100 --grad-clip-norm 35 --seed 0 --deterministic`
+- output: `--output-json outputs/overfit_one_sample.json`
+
+Canonical command:
+
+```bash
+python detr3d/scripts/overfit_one_batch.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --sample-index 0 \
+  --image-height 832 \
+  --image-width 1472 \
+  --num-queries 100 \
+  --epochs 60 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --max-boxes 100 \
+  --grad-clip-norm 35 \
+  --seed 0 \
+  --deterministic \
+  --output-json outputs/overfit_one_sample.json
+```
+
+Canonical expected result from `outputs/overfit_one_sample.json`:
+- `class_matches = 10/10`
+- `mean_center_distance = 2.3838 m`
+- `median_center_distance = 2.1390 m`
+- `loss_cls = 0.3164`
+- `loss_bbox = 1.6248`
+
+## Older Paper-Oriented Reference
+
+The sections below describe the older paper-oriented package setup and should not be treated as the primary regression baseline when they conflict with the canonical settings above.
+
 This guide now targets a more paper-oriented DETR3D package setup:
 - ResNet-101 backbone
 - 4-output FPN
