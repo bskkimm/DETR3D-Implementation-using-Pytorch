@@ -37,6 +37,7 @@ Use this as a regression reference when changing model, matcher, loss, data, or 
 
 - Before risky model-path changes, confirm the current branch and worktree state.
 - Run the canonical one-sample command from `COMMAND_GUIDE.md` before and after substantial behavioral changes when feasible.
+- Before broad training, use `detr3d/scripts/benchmark_forward.py` to choose a small-training setup that uses both GPU memory and CPU data loading efficiently.
 - Record only durable command/baseline updates in `COMMAND_GUIDE.md`.
 - Keep historical experiment diaries out of the repo root unless they are actively needed.
 

@@ -63,6 +63,66 @@ Canonical expected result from `outputs/overfit_one_sample.json`:
 - `loss_cls = 0.3164`
 - `loss_bbox = 1.6248`
 
+## GPU And Data-Loader Sizing
+
+Before full training, find the strongest stable small-training configuration for the available machine. The current workstation has a large GPU budget and a 32-logical-CPU host, so tune both GPU memory use and CPU image loading.
+
+Use `detr3d/scripts/benchmark_forward.py` for short throughput probes. It reports dataloader wait time, training-step time, samples/sec, and CUDA peak memory.
+
+Start by finding a good dataloader worker count at the baseline resolution:
+
+```bash
+python detr3d/scripts/benchmark_forward.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 4 \
+  --num-workers 4 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 832 \
+  --image-width 1472 \
+  --num-queries 100 \
+  --use-amp \
+  --warmup-steps 3 \
+  --steps 10 \
+  --output-json outputs/bench/bs4_w4_832x1472_q100.json
+```
+
+Repeat with `--num-workers 0`, `2`, `4`, `8`, `12`, and `16`. Prefer the smallest worker count where `mean_data_time_sec` is consistently much lower than `mean_step_time_sec`. If data wait remains high, keep `--pin-memory`, `--persistent-workers`, and increase `--prefetch-factor` to `6` or `8`.
+
+Then scale GPU use in this order:
+
+1. Increase `--batch-size`: `1`, `2`, `4`, `8`, then higher only if memory and throughput justify it.
+2. Increase image size: baseline `832x1472`, then official-ish `900x1600`.
+3. Increase `--num-queries`: `100`, `300`, `600`, `900`.
+
+For a 96GB GPU, aim for high but safe peak memory, roughly 80-90GB reserved during the benchmark. Avoid configurations that only fit with almost no headroom, because eval, checkpointing, fragmentation, and longer runs can still OOM.
+
+Example heavier probe:
+
+```bash
+python detr3d/scripts/benchmark_forward.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 4 \
+  --num-workers 8 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 900 \
+  --image-width 1600 \
+  --num-queries 300 \
+  --use-amp \
+  --warmup-steps 3 \
+  --steps 10 \
+  --output-json outputs/bench/bs4_w8_900x1600_q300.json
+```
+
+Only after a configuration has good benchmark throughput should it be used for `8`, `32`, and `64` sample small-training runs.
+
 ## Older Paper-Oriented Reference
 
 The sections below describe the older paper-oriented package setup and should not be treated as the primary regression baseline when they conflict with the canonical settings above.
