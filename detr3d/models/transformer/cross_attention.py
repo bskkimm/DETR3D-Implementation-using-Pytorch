@@ -15,7 +15,6 @@ class Detr3DCrossAttention(nn.Module):
         embed_dims: int = 256,
         num_cams: int = 6,
         num_levels: int = 4,
-        num_points: int = 5,
         pc_range = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
         dropout: float = 0.1,
     ):
@@ -23,10 +22,9 @@ class Detr3DCrossAttention(nn.Module):
         self.embed_dims = embed_dims
         self.num_cams = num_cams
         self.num_levels = num_levels
-        self.num_points = num_points
         self.pc_range = pc_range
         self.dropout = nn.Dropout(dropout)
-        self.attention_weights = nn.Linear(embed_dims, num_cams * num_levels * num_points)
+        self.attention_weights = nn.Linear(embed_dims, num_cams * num_levels)
         self.output_proj = nn.Linear(embed_dims, embed_dims)
         self.position_encoder = nn.Sequential(
             nn.Linear(3, embed_dims),
@@ -62,10 +60,10 @@ class Detr3DCrossAttention(nn.Module):
             query.shape[0],
             query.shape[1],
             self.num_cams,
-            self.num_points,
+            1,
             self.num_levels,
         )
-        attention_weights = attention_weights.unsqueeze(1)
+        attention_weights = attention_weights.permute(0, 3, 1, 2, 4).unsqueeze(4)
         attention_weights = attention_weights.sigmoid().to(sampled_feats.dtype) * mask
 
         fused = (sampled_feats * attention_weights).sum(dim=-1).sum(dim=-1).sum(dim=-1)
