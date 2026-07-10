@@ -26,6 +26,7 @@ from detr3d.data.nuscenes_dataset import NUSCENES_CLASSES
 from detr3d.engine.diagnostics import decode_predictions
 from detr3d.engine.trainer import fit
 from detr3d.models.losses import Detr3DLoss
+from detr3d.models.losses.matcher import _linear_sum_assignment
 from train import build_model, build_optimizer
 
 
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backbone-lr-mult", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--loss-cls-weight", type=float, default=1.0)
+    parser.add_argument("--bg-cls-weight", type=float, default=0.1)
     parser.add_argument("--focal-alpha", type=float, default=0.5)
     parser.add_argument("--focal-gamma", type=float, default=1.5)
     parser.add_argument("--scheduler", type=str, default="none", choices=["multistep", "none"])
@@ -52,12 +54,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=35.0)
     parser.add_argument("--score-threshold", type=float, default=0.005)
     parser.add_argument("--max-boxes", type=int, default=100)
+    parser.add_argument("--center-nms-radius", type=float, default=0.0)
     parser.add_argument("--disable-auxiliary-losses", action="store_true")
     parser.add_argument("--use-amp", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output-json", type=str, default=None)
+    parser.add_argument("--save-checkpoint", type=str, default=None)
     return parser.parse_args()
 
 
@@ -101,6 +105,7 @@ def summarize_sample_fit(
     device: torch.device,
     score_threshold: float,
     max_boxes: int,
+    center_nms_radius: float = 0.0,
 ) -> dict:
     sample = dataset[sample_index]
     pred_boxes, pred_scores, pred_labels = decode_predictions(
@@ -109,6 +114,7 @@ def summarize_sample_fit(
         device=device,
         score_threshold=score_threshold,
         max_boxes=max_boxes,
+        center_nms_radius=center_nms_radius,
     )
     gt_boxes = sample.get("gt_boxes_lidar", sample["gt_boxes_ego"]).cpu()
     gt_labels = sample["gt_labels"].cpu()
@@ -120,6 +126,12 @@ def summarize_sample_fit(
         "mean_center_distance": None,
         "median_center_distance": None,
         "class_matches": 0,
+        "unique_mean_center_distance": None,
+        "unique_median_center_distance": None,
+        "unique_class_matches": 0,
+        "class_aware_unique_mean_center_distance": None,
+        "class_aware_unique_median_center_distance": None,
+        "class_aware_unique_class_matches": 0,
         "gt_classes": [NUSCENES_CLASSES[int(label)] for label in gt_labels.tolist()],
         "top_predictions": [
             {
@@ -169,6 +181,28 @@ def summarize_sample_fit(
     summary["mean_center_distance"] = float(best_dist.mean())
     summary["median_center_distance"] = float(best_dist.median())
     summary["class_matches"] = int(class_matches)
+
+    unique_gt_idx, unique_pred_idx = _linear_sum_assignment(center_dist.clone())
+    unique_gt_idx = unique_gt_idx.cpu()
+    unique_pred_idx = unique_pred_idx.cpu()
+    unique_dist = center_dist[unique_gt_idx, unique_pred_idx]
+    summary["unique_mean_center_distance"] = float(unique_dist.mean())
+    summary["unique_median_center_distance"] = float(unique_dist.median())
+    summary["unique_class_matches"] = int(
+        sum(int(gt_labels[g]) == int(pred_labels[p]) for g, p in zip(unique_gt_idx.tolist(), unique_pred_idx.tolist()))
+    )
+
+    class_penalty = torch.ne(gt_labels[:, None], pred_labels[None, :]).float() * 1000.0
+    class_aware_cost = center_dist + class_penalty
+    class_gt_idx, class_pred_idx = _linear_sum_assignment(class_aware_cost.clone())
+    class_gt_idx = class_gt_idx.cpu()
+    class_pred_idx = class_pred_idx.cpu()
+    class_dist = center_dist[class_gt_idx, class_pred_idx]
+    summary["class_aware_unique_mean_center_distance"] = float(class_dist.mean())
+    summary["class_aware_unique_median_center_distance"] = float(class_dist.median())
+    summary["class_aware_unique_class_matches"] = int(
+        sum(int(gt_labels[g]) == int(pred_labels[p]) for g, p in zip(class_gt_idx.tolist(), class_pred_idx.tolist()))
+    )
     return summary
 
 
@@ -193,6 +227,7 @@ def main() -> None:
         loss_cls_weight=args.loss_cls_weight,
         alpha=args.focal_alpha,
         gamma=args.focal_gamma,
+        bg_cls_weight=args.bg_cls_weight,
         use_auxiliary_losses=not args.disable_auxiliary_losses,
         debug=True,
     )
@@ -233,6 +268,7 @@ def main() -> None:
         device=device,
         score_threshold=args.score_threshold,
         max_boxes=args.max_boxes,
+        center_nms_radius=args.center_nms_radius,
     )
 
     result = {
@@ -240,6 +276,20 @@ def main() -> None:
         "final_epoch": history[-1] if history else {},
         "summary": summary,
     }
+
+    if args.save_checkpoint:
+        checkpoint_path = Path(args.save_checkpoint)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "config": vars(args),
+                "final_epoch": history[-1] if history else {},
+                "summary": summary,
+            },
+            checkpoint_path,
+        )
+        print(f"Saved checkpoint to {checkpoint_path}")
 
     print("\nFinal training metrics:")
     if history:
@@ -263,6 +313,12 @@ def main() -> None:
     print(f"mean_center_distance: {summary['mean_center_distance']}")
     print(f"median_center_distance: {summary['median_center_distance']}")
     print(f"class_matches: {summary['class_matches']}/{summary['num_gt']}")
+    print(f"unique_mean_center_distance: {summary['unique_mean_center_distance']}")
+    print(f"unique_median_center_distance: {summary['unique_median_center_distance']}")
+    print(f"unique_class_matches: {summary['unique_class_matches']}/{summary['num_gt']}")
+    print(f"class_aware_unique_mean_center_distance: {summary['class_aware_unique_mean_center_distance']}")
+    print(f"class_aware_unique_median_center_distance: {summary['class_aware_unique_median_center_distance']}")
+    print(f"class_aware_unique_class_matches: {summary['class_aware_unique_class_matches']}/{summary['num_gt']}")
     print("\nGT classes:")
     print(summary["gt_classes"])
     print("\nTop predicted classes:")

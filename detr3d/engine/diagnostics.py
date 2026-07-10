@@ -34,6 +34,7 @@ def decode_predictions(
     device: torch.device,
     score_threshold: float,
     max_boxes: int,
+    center_nms_radius: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     model.eval()
     with torch.no_grad():
@@ -61,7 +62,22 @@ def decode_predictions(
         keep_indices = keep_indices[keep_scores.argsort(descending=True)[:max_boxes]]
 
     pred_boxes = decode_box_predictions(bbox_preds[keep_indices])
-    return pred_boxes.cpu(), scores[keep_indices].cpu(), labels[keep_indices].cpu()
+    pred_scores = scores[keep_indices]
+    pred_labels = labels[keep_indices]
+
+    if center_nms_radius > 0 and pred_boxes.shape[0] > 0:
+        order = torch.argsort(pred_scores, descending=True)
+        keep = []
+        for idx in order.tolist():
+            center = pred_boxes[idx, :3]
+            if all(float(torch.norm(center - pred_boxes[j, :3])) >= center_nms_radius for j in keep):
+                keep.append(idx)
+        keep_indices = torch.as_tensor(keep, dtype=torch.long, device=pred_boxes.device)
+        pred_boxes = pred_boxes[keep_indices]
+        pred_scores = pred_scores[keep_indices]
+        pred_labels = pred_labels[keep_indices]
+
+    return pred_boxes.cpu(), pred_scores.cpu(), pred_labels.cpu()
 
 
 def box7_to_bev_corners(boxes: torch.Tensor) -> torch.Tensor:
