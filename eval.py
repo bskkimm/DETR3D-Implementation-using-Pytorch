@@ -25,8 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-indices", type=str, default=None)
     parser.add_argument("--num-eval-samples", type=int, default=1)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
     parser.add_argument("--image-height", type=int, default=900)
     parser.add_argument("--image-width", type=int, default=1600)
+    parser.add_argument("--filter-gt-by-range", action="store_true")
+    parser.add_argument("--filter-zero-point-gt", action="store_true")
     parser.add_argument("--backbone", type=str, default="resnet101")
     parser.add_argument("--disable-pretrained-backbone", action="store_true")
     parser.add_argument("--num-queries", type=int, default=900)
@@ -59,6 +62,9 @@ def main() -> None:
         version=args.version,
         image_size=(args.image_height, args.image_width),
         max_samples=args.max_samples,
+        split=args.dataset_split,
+        filter_gt_by_range=args.filter_gt_by_range,
+        filter_zero_point_gt=args.filter_zero_point_gt,
     )
     model = build_model(
         num_queries=args.num_queries,

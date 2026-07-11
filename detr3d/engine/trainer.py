@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from typing import Any, Callable, Dict, List
 
 import torch
@@ -76,12 +77,23 @@ def train_one_epoch(
     use_amp: bool = False,
     scaler: torch.amp.GradScaler | None = None,
     debug: bool = False,
+    safety_check: Callable[[], None] | None = None,
+    step_scheduler=None,
 ) -> Dict[str, float]:
     model.train()
     running = defaultdict(float)
     amp_enabled = use_amp and device.type == "cuda"
+    epoch_start = time.monotonic()
+    previous_step_end = epoch_start
+    thermal_pause_start = getattr(safety_check, "total_pause_sec", 0.0)
+    thermal_count_start = getattr(safety_check, "pause_count", 0)
 
     for batch in dataloader:
+        batch_ready = time.monotonic()
+        running["time_data_sec"] += batch_ready - previous_step_end
+        if safety_check is not None:
+            safety_check()
+        step_start = time.monotonic()
         batch = move_batch_to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
         debug_params = _collect_named_params(model) if debug else {}
@@ -122,6 +134,8 @@ def train_one_epoch(
                 if debug:
                     running["debug_grad_total_norm"] += float(total_grad_norm.item())
             optimizer.step()
+        if step_scheduler is not None:
+            step_scheduler.step()
 
         if debug:
             for name, param in debug_params.items():
@@ -135,9 +149,24 @@ def train_one_epoch(
                 running[name] += float(value.detach().cpu())
             else:
                 running[name] += float(value)
+        running["time_train_sec"] += time.monotonic() - step_start
+        previous_step_end = time.monotonic()
 
     num_batches = max(len(dataloader), 1)
-    return {name: total / num_batches for name, total in running.items()}
+    metrics = {
+        name: total if name.startswith("time_") else total / num_batches
+        for name, total in running.items()
+    }
+    metrics["time_epoch_wall_sec"] = time.monotonic() - epoch_start
+    metrics["time_thermal_pause_sec"] = getattr(safety_check, "total_pause_sec", 0.0) - thermal_pause_start
+    metrics["thermal_pause_count"] = float(getattr(safety_check, "pause_count", 0) - thermal_count_start)
+    metrics["max_gpu_temp"] = float(getattr(safety_check, "max_observed_gpu_temp", 0.0))
+    metrics["max_cpu_temp"] = float(getattr(safety_check, "max_observed_cpu_temp", 0.0))
+    metrics["max_gpu_power_watts"] = float(getattr(safety_check, "max_observed_power_watts", 0.0))
+    metrics["lr"] = float(optimizer.param_groups[0]["lr"])
+    if len(optimizer.param_groups) > 1:
+        metrics["backbone_lr"] = float(optimizer.param_groups[1]["lr"])
+    return metrics
 
 
 def fit(
@@ -153,6 +182,8 @@ def fit(
     start_epoch: int = 0,
     epoch_end_callback: Callable[[int, Dict[str, float]], None] | None = None,
     debug: bool = False,
+    safety_check: Callable[[], None] | None = None,
+    step_scheduler=None,
 ) -> List[Dict[str, float]]:
     history: List[Dict[str, float]] = []
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
@@ -168,6 +199,8 @@ def fit(
             use_amp=use_amp,
             scaler=scaler,
             debug=debug,
+            safety_check=safety_check,
+            step_scheduler=step_scheduler,
         )
         metrics["epoch"] = float(epoch + 1)
         history.append(metrics)

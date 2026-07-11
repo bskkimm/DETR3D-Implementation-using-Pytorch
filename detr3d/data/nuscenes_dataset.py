@@ -37,6 +37,7 @@ NUSCENES_CLASSES = [
 ]
 
 CLASS_TO_ID = {name: idx for idx, name in enumerate(NUSCENES_CLASSES)}
+DEFAULT_POINT_CLOUD_RANGE = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0)
 
 
 def load_table(meta_root: Path, name: str) -> List[dict]:
@@ -118,9 +119,11 @@ def category_to_detection_class(category_name: str) -> str | None:
 class NuScenesTables:
     samples: List[dict]
     sample_by_token: Dict[str, dict]
+    scene_by_token: Dict[str, dict]
     sample_data_by_token: Dict[str, dict]
     sensor_by_token: Dict[str, dict]
     camera_data_by_sample_token: Dict[str, Dict[str, dict]]
+    lidar_data_by_sample_token: Dict[str, dict]
     annotation_by_token: Dict[str, dict]
     annotations_by_sample_token: Dict[str, List[dict]]
     instance_by_token: Dict[str, dict]
@@ -132,6 +135,7 @@ class NuScenesTables:
     def from_dataroot(cls, dataroot: Path, version: str) -> "NuScenesTables":
         meta_root = dataroot / version
         sample_table = load_table(meta_root, "sample")
+        scene_table = load_table(meta_root, "scene")
         sample_data_table = load_table(meta_root, "sample_data")
         annotation_table = load_table(meta_root, "sample_annotation")
         instance_table = load_table(meta_root, "instance")
@@ -141,12 +145,18 @@ class NuScenesTables:
         calibrated_sensor_by_token = build_index(calibrated_sensor_table)
         sensor_by_token = build_index(sensor_table)
         camera_data_by_sample_token: Dict[str, Dict[str, dict]] = {}
+        lidar_data_by_sample_token: Dict[str, dict] = {}
         for row in sample_data_table:
-            if row["fileformat"] != "jpg" or not row["is_key_frame"]:
+            if not row["is_key_frame"]:
                 continue
             calibrated = calibrated_sensor_by_token[row["calibrated_sensor_token"]]
             sensor = sensor_by_token[calibrated["sensor_token"]]
             channel = sensor["channel"]
+            if channel == "LIDAR_TOP":
+                lidar_data_by_sample_token[row["sample_token"]] = row
+                continue
+            if row["fileformat"] != "jpg":
+                continue
             if channel not in CAMERA_NAMES:
                 continue
             camera_data_by_sample_token.setdefault(row["sample_token"], {})[channel] = row
@@ -158,9 +168,11 @@ class NuScenesTables:
         return cls(
             samples=sample_table,
             sample_by_token=build_index(sample_table),
+            scene_by_token=build_index(scene_table),
             sample_data_by_token=build_index(sample_data_table),
             sensor_by_token=sensor_by_token,
             camera_data_by_sample_token=camera_data_by_sample_token,
+            lidar_data_by_sample_token=lidar_data_by_sample_token,
             annotation_by_token=build_index(annotation_table),
             annotations_by_sample_token=annotations_by_sample_token,
             instance_by_token=build_index(instance_table),
@@ -179,12 +191,30 @@ class NuScenesDetr3DDataset(Dataset):
         version: str = "v1.0-trainval",
         image_size: tuple[int, int] = (900, 1600),
         max_samples: int | None = None,
+        split: str | None = None,
+        filter_gt_by_range: bool = False,
+        filter_zero_point_gt: bool = False,
+        point_cloud_range: tuple[float, float, float, float, float, float] = DEFAULT_POINT_CLOUD_RANGE,
+        tables: NuScenesTables | None = None,
     ):
         self.dataroot = Path(dataroot)
         self.version = version
         self.image_size = image_size
-        self.tables = NuScenesTables.from_dataroot(self.dataroot, version)
-        self.samples = self.tables.samples[:max_samples] if max_samples is not None else self.tables.samples
+        self.filter_gt_by_range = filter_gt_by_range
+        self.filter_zero_point_gt = filter_zero_point_gt
+        self.point_cloud_range = point_cloud_range
+        self.tables = tables or NuScenesTables.from_dataroot(self.dataroot, version)
+        samples = self.tables.samples
+        if split is not None:
+            from nuscenes.utils.splits import create_splits_scenes
+
+            split_scenes = set(create_splits_scenes(verbose=False)[split])
+            samples = [
+                sample
+                for sample in samples
+                if self.tables.scene_by_token[sample["scene_token"]]["name"] in split_scenes
+            ]
+        self.samples = samples[:max_samples] if max_samples is not None else samples
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -198,14 +228,10 @@ class NuScenesDetr3DDataset(Dataset):
 
     def _get_lidar_record(self, sample_record: dict) -> dict:
         sample_token = sample_record["token"]
-        for row in self.tables.sample_data_by_token.values():
-            if row.get("sample_token") != sample_token:
-                continue
-            calibrated = self.tables.calibrated_sensor_by_token[row["calibrated_sensor_token"]]
-            sensor = self.tables.sensor_by_token[calibrated["sensor_token"]]
-            if sensor.get("channel") == "LIDAR_TOP":
-                return row
-        raise KeyError(f"Missing LIDAR_TOP for sample {sample_token}")
+        try:
+            return self.tables.lidar_data_by_sample_token[sample_token]
+        except KeyError as exc:
+            raise KeyError(f"Missing LIDAR_TOP for sample {sample_token}") from exc
 
     def _sensor_to_global(self, sample_data_record: dict) -> np.ndarray:
         calibrated_sensor = self.tables.calibrated_sensor_by_token[sample_data_record["calibrated_sensor_token"]]
@@ -284,6 +310,12 @@ class NuScenesDetr3DDataset(Dataset):
                 continue
             center_lidar, yaw, velocity_lidar = self._transform_global_ann_to_lidar(ann, lidar_record)
             x, y, z = center_lidar.tolist()
+            if self.filter_gt_by_range:
+                x_min, y_min, z_min, x_max, y_max, z_max = self.point_cloud_range
+                if not (x_min <= x <= x_max and y_min <= y <= y_max and z_min <= z <= z_max):
+                    continue
+            if self.filter_zero_point_gt and ann.get("num_lidar_pts", 0) + ann.get("num_radar_pts", 0) <= 0:
+                continue
             w, l, h = ann["size"]
             vx, vy = velocity_lidar.tolist()
             boxes.append([x, y, z, w, l, h, yaw, vx, vy])

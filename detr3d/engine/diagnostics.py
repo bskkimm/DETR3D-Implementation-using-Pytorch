@@ -226,9 +226,34 @@ def _draw_projected_boxes(
             first = False
 
 
+def _draw_projected_labels(
+    ax,
+    corners_2d: torch.Tensor,
+    in_front_mask: torch.Tensor,
+    in_frame_mask: torch.Tensor,
+    texts: list[str],
+    color: str,
+) -> None:
+    for box_idx, text in enumerate(texts):
+        visible = in_front_mask[box_idx] & in_frame_mask[box_idx]
+        if not bool(visible.any()):
+            continue
+        pts = corners_2d[box_idx, visible]
+        ax.text(
+            float(pts[:, 0].mean()),
+            float(pts[:, 1].mean()),
+            text,
+            color=color,
+            fontsize=7,
+            bbox={"facecolor": "black", "alpha": 0.45, "pad": 1, "edgecolor": "none"},
+        )
+
+
 def save_overlay_figure(
     sample: dict,
     pred_boxes: torch.Tensor,
+    pred_scores: torch.Tensor,
+    pred_labels: torch.Tensor,
     output_path: Path,
     *,
     original_image_shapes: list[tuple[int, int] | None] | None = None,
@@ -236,8 +261,14 @@ def save_overlay_figure(
     import matplotlib.pyplot as plt
 
     gt_boxes = sample.get("gt_boxes_lidar", sample["gt_boxes_ego"]).cpu()
+    gt_labels = sample["gt_labels"].cpu()
     pred_corners = box7_to_corners(pred_boxes)
     gt_corners = box7_to_corners(gt_boxes)
+    gt_texts = [f"GT {NUSCENES_CLASSES[int(label)]}" for label in gt_labels.tolist()]
+    pred_texts = [
+        f"P {NUSCENES_CLASSES[int(label)]} {float(score):.2f}"
+        for label, score in zip(pred_labels.cpu().tolist(), pred_scores.cpu().tolist())
+    ]
     fig, axes = plt.subplots(2, 3, figsize=(18, 7.5), constrained_layout=False)
     axes = axes.reshape(-1)
     for cam_idx, ax in enumerate(axes):
@@ -250,6 +281,8 @@ def save_overlay_figure(
         pred_xy, pred_front, pred_frame = project_corners_to_image(pred_corners, lidar2img, image_shape, original_image_shape)
         _draw_projected_boxes(ax, gt_xy, gt_front, gt_frame, color="lime", label="GT")
         _draw_projected_boxes(ax, pred_xy, pred_front, pred_frame, color="red", label="Pred")
+        _draw_projected_labels(ax, gt_xy, gt_front, gt_frame, gt_texts, color="lime")
+        _draw_projected_labels(ax, pred_xy, pred_front, pred_frame, pred_texts, color="red")
         ax.set_title(CAMERA_NAMES[cam_idx])
         ax.axis("off")
         handles, labels = ax.get_legend_handles_labels()
@@ -449,6 +482,8 @@ def evaluate_samples(
             save_overlay_figure(
                 sample,
                 pred_boxes,
+                pred_scores,
+                pred_labels,
                 overlay_dir / f"{sample_index:04d}_{token}_overlay.png",
                 original_image_shapes=original_image_shapes,
             )

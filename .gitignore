@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 outputs/
 **/__pycache__/
+mlflow.db
+mlflow.db-*
+mlruns/

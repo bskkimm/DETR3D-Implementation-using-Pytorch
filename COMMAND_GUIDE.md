@@ -63,6 +63,72 @@ Canonical expected result from `outputs/overfit_one_sample.json`:
 - `loss_cls = 0.3164`
 - `loss_bbox = 1.6248`
 
+## MLflow Tracking
+
+MLflow is installed in the current `torch_env` environment. The default local tracking backend for this repo is SQLite:
+
+```bash
+sqlite:///mlflow.db
+```
+
+Start the local UI from the repository root:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000
+```
+
+Enable tracking on training runs with:
+
+```bash
+--mlflow \
+--mlflow-experiment detr3d-small-training \
+--mlflow-run-name filtered_q100_bs2_832x1472_e120
+```
+
+Training logs CLI args as params, git branch/commit as tags, per-epoch train metrics, periodic eval metrics, `history.json`, and `final_eval.json`. When eval artifacts are enabled, labeled camera overlays and BEV images are also logged under `eval_artifacts/`. Checkpoints are not copied into MLflow by default to avoid duplicating large files; add `--mlflow-log-checkpoints` only for small or important runs.
+
+For normal experiment runs, generate images by setting `--num-eval-samples` and `--eval-every` and do not pass `--disable-eval-artifacts`. Use `--disable-eval-artifacts` only for smoke/debug runs where speed matters more than visual review.
+
+Smoke-test command used to verify local MLflow setup:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --batch-size 1 \
+  --epochs 1 \
+  --num-workers 0 \
+  --image-height 832 \
+  --image-width 1472 \
+  --filter-gt-by-range \
+  --filter-zero-point-gt \
+  --backbone resnet101 \
+  --num-queries 10 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --grad-clip-norm 35 \
+  --output-dir outputs/mlflow_smoke \
+  --num-eval-samples 1 \
+  --eval-every 1 \
+  --eval-score-threshold 0.005 \
+  --eval-max-boxes 10 \
+  --mlflow \
+  --mlflow-experiment detr3d-smoke \
+  --mlflow-run-name mlflow_smoke
+```
+
 ## GPU And Data-Loader Sizing
 
 Before full training, find the strongest stable small-training configuration for the available machine. The current workstation has a large GPU budget and a 32-logical-CPU host, so tune both GPU memory use and CPU image loading.
@@ -123,7 +189,7 @@ python detr3d/scripts/benchmark_forward.py \
 
 Only after a configuration has good benchmark throughput should it be used for `8`, `32`, and `64` sample small-training runs.
 
-Measured on the current 32-logical-CPU host and RTX PRO 6000 Blackwell 96GB GPU, the best practical starting points are:
+Measured on the current 32-logical-CPU host and RTX PRO 6000 Blackwell 96GB GPU, the first throughput-oriented starting points were:
 
 - throughput-oriented small training: `832x1472`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
 - official-resolution parity check: `900x1600`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
@@ -135,37 +201,105 @@ Observed benchmark summaries:
 - `900x1600`, batch `9`, queries `900`: fits at about `91.8GB` reserved but is slower and leaves little headroom, so avoid it for normal long runs
 - dataloader workers: `12-16` workers remove CPU wait after warmup; prefer `16` for heavy runs unless the rest of the system needs CPU headroom
 
+Important training-quality finding:
+
+- AMP currently hurts optimization in this repo. Use AMP for throughput probes only, not for quality-sensitive one-sample or small-training experiments until this is investigated.
+- No-AMP `832x1472`, batch `4`, queries `100` uses about `86.5GB` CUDA reserved and preserves the one-sample learning behavior.
+- The best current small-training result is `8` samples, `batch-size 4`, `num-queries 100`, no AMP, `60` epochs: `total_class_matches = 73/96`, `mean_center_distance = 5.3142 m`, `mean_median_center_distance = 1.7730 m`.
+- The best current `64`-sample run is no-AMP `832x1472`, `batch-size 2`, `num-queries 100`, `60` epochs with eval artifacts disabled: final 8-sample eval `total_class_matches = 80/96`, `mean_center_distance = 4.5565 m`, `mean_median_center_distance = 1.0175 m`; best training epoch `58`, `loss = 8.1146`, `loss_cls = 0.0943`, `loss_bbox = 1.3158`.
+- Extending that run to `120` total epochs improved all-64 eval from `1106/1319` to `1176/1319` class matches, `mean_center_distance = 3.1585 m`, `mean_median_center_distance = 1.0007 m`; best training epoch `117`, `loss = 6.0172`, `loss_cls = 0.0165`, `loss_bbox = 1.0095`.
+- The remaining large mean-center-distance errors are dominated by far GT outliers. Worst samples include annotations outside the official point-cloud range and often with zero lidar/radar points, so the next parity experiment should add official-style GT filtering before more epoch or batch-size tuning.
+- Official-style opt-in GT filtering was added with `--filter-gt-by-range --filter-zero-point-gt`. On the 64-sample subset it reduces GT count from `1319` to `1103` with no empty samples.
+- Filtered 64-sample no-AMP `832x1472`, `batch-size 2`, `num-queries 100`, `120` total epochs: all-64 eval `total_class_matches = 982/1103`, `mean_center_distance = 1.0215 m`, `mean_median_center_distance = 0.9022 m`; best training epoch `115`, `loss = 3.3196`, `loss_cls = 0.0186`, `loss_bbox = 0.5467`.
+- Official-like filtered 64-sample no-AMP `900x1600`, `batch-size 2`, `num-queries 900`, `120` total epochs is the current best small-training result: all-64 eval `total_class_matches = 1077/1103`, `mean_center_distance = 0.6777 m`, `mean_median_center_distance = 0.5308 m`; best/latest training epoch `120`, `loss = 2.7725`, `loss_cls = 0.0261`, `loss_bbox = 0.4830`. Initial run hit the 30-minute shell timeout after epoch 62, not a CUDA/model failure; it resumed cleanly from `checkpoint_epoch_0060.pt`.
+- Official-like filtered 256-sample no-AMP `900x1600`, `batch-size 2`, `num-queries 900`, `60` epochs scales cleanly: all-256 train-subset eval `total_class_matches = 7558/8083`, `mean_center_distance = 0.8565 m`, `mean_median_center_distance = 0.6692 m`; best/latest training epoch `60`, `loss = 3.6838`, `loss_cls = 0.0477`, `loss_bbox = 0.5563`. MLflow run id `22ebe0c38bf549578e678743141c4f07` under `detr3d-small-training`.
+- No-AMP `batch-size 4` can trigger a CUDA launch timeout on this display-attached GPU during longer 64-sample runs. Prefer `batch-size 2` for stable quality experiments unless running headless or after confirming the watchdog is disabled.
+- High-throughput AMP runs with `batch-size 8`, `num-queries 900` stayed nearly flat and are not recommended for quality yet.
+
 Recommended first small-training command after the one-sample regression check:
 
 ```bash
 python3 train.py \
   --dataroot /home/beomseokkim2/dataset/nuscenes \
   --version v1.0-trainval \
-  --max-samples 64 \
-  --batch-size 8 \
-  --epochs 12 \
-  --num-workers 16 \
+  --max-samples 8 \
+  --batch-size 4 \
+  --epochs 60 \
+  --num-workers 12 \
   --prefetch-factor 4 \
   --pin-memory \
   --persistent-workers \
-  --use-amp \
   --image-height 832 \
   --image-width 1472 \
+  --filter-gt-by-range \
+  --filter-zero-point-gt \
   --backbone resnet101 \
-  --num-queries 900 \
+  --num-queries 100 \
   --lr 2e-4 \
   --backbone-lr-mult 0.1 \
   --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
   --grad-clip-norm 35 \
-  --output-dir outputs/train_64_832x1472_q900_bs8 \
-  --save-every 2 \
+  --output-dir outputs/overfit_8_832x1472_q100_bs4_noamp_e60 \
+  --save-every 20
+```
+
+Evaluate it without plot artifacts if `matplotlib` is unavailable:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_8_832x1472_q100_bs4_noamp_e60/final_checkpoint.pt \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
   --num-eval-samples 8 \
-  --eval-every 2 \
+  --image-height 832 \
+  --image-width 1472 \
+  --backbone resnet101 \
+  --num-queries 100 \
+  --score-threshold 0.005 \
+  --max-boxes 100 \
+  --quiet \
+  --summary-out outputs/overfit_8_832x1472_q100_bs4_noamp_e60/eval_8.json
+```
+
+Use the stable `batch-size 2` setup below for `64`-sample quality checks on this display-attached GPU, not AMP/q900.
+
+Current recommended `64`-sample quality command:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 2 \
+  --epochs 60 \
+  --num-workers 12 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 832 \
+  --image-width 1472 \
+  --backbone resnet101 \
+  --num-queries 100 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_64_832x1472_q100_bs2_noamp_e60 \
+  --save-every 20 \
+  --num-eval-samples 8 \
+  --eval-every 20 \
   --eval-score-threshold 0.005 \
   --eval-max-boxes 100
 ```
-
-If that is stable and promising, run the official-resolution parity variant with `--image-height 900 --image-width 1600 --output-dir outputs/train_64_900x1600_q900_bs8`.
 
 ## Older Paper-Oriented Reference
 

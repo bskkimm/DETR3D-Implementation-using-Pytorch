@@ -3,6 +3,8 @@ torchvision
 numpy
 Pillow
 matplotlib
+mlflow
+nuscenes-devkit
 jupyter
 pre-commit
 ruff

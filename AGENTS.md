@@ -29,6 +29,7 @@ Use this as a regression reference when changing model, matcher, loss, data, or 
 
 - Preserve the official-style encoded `10D` internal box training path unless intentionally running a controlled experiment.
 - Dataset GT boxes are semantic `9D`; training/matching/loss operate on encoded `10D`; diagnostics decode predictions back to semantic `9D` for readability.
+- Prefer official-style filtered GT for current quality experiments: keep boxes inside `[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]` and drop zero-point annotations with `--filter-gt-by-range --filter-zero-point-gt`.
 - Preserve official-like learned cross-attention weighting, iterative reference refinement, dedicated initial reference points, and classification-head normalization unless intentionally testing a targeted change.
 - Make one targeted change at a time and compare against the canonical one-sample regression check.
 - Avoid broad hyperparameter sweeps before checking implementation parity with the official DETR3D repo/config.
@@ -38,6 +39,7 @@ Use this as a regression reference when changing model, matcher, loss, data, or 
 - Before risky model-path changes, confirm the current branch and worktree state.
 - Run the canonical one-sample command from `COMMAND_GUIDE.md` before and after substantial behavioral changes when feasible.
 - Before broad training, use `detr3d/scripts/benchmark_forward.py` to choose a small-training setup that uses both GPU memory and CPU data loading efficiently.
+- Current quality experiments should avoid AMP. AMP improves throughput but was observed to make one-sample and small-sample training stall in this repo.
 - Record only durable command/baseline updates in `COMMAND_GUIDE.md`.
 - Keep historical experiment diaries out of the repo root unless they are actively needed.
 
