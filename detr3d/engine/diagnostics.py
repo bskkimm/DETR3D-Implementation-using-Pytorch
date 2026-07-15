@@ -53,12 +53,9 @@ def decode_predictions(
     scores, labels = probs.max(dim=-1)
 
     keep = scores >= score_threshold
-    if keep.sum() == 0:
-        keep_indices = scores.topk(min(max_boxes, scores.numel())).indices
-    else:
-        keep_indices = torch.nonzero(keep, as_tuple=False).squeeze(-1)
-        keep_scores = scores[keep_indices]
-        keep_indices = keep_indices[keep_scores.argsort(descending=True)[:max_boxes]]
+    keep_indices = torch.nonzero(keep, as_tuple=False).squeeze(-1)
+    keep_scores = scores[keep_indices]
+    keep_indices = keep_indices[keep_scores.argsort(descending=True)[:max_boxes]]
 
     pred_boxes = decode_box_predictions(bbox_preds[keep_indices])
     pred_scores = scores[keep_indices]

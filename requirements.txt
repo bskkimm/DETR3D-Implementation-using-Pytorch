@@ -7,5 +7,6 @@ mlflow
 nuscenes-devkit
 jupyter
 pre-commit
+pytest
 ruff
 black
