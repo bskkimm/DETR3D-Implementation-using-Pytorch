@@ -48,6 +48,12 @@ Rerendering validation sample 0 at a 0.5 threshold reduced the image from 100 pr
 
 ## Four Transformer Architecture Differences
 
+Official logic in this section is sourced from the upstream
+[WangYueFt/detr3d](https://github.com/WangYueFt/detr3d) repository. Links are
+pinned to upstream commit
+[`34a4767`](https://github.com/WangYueFt/detr3d/commit/34a47673011fe13593a3e594a376668acca8bddb)
+so the cited behavior does not change with the upstream default branch.
+
 ### 1. Decoder Operation Order
 
 Current implementation:
@@ -66,6 +72,7 @@ References:
 
 - Current: `detr3d/models/transformer/decoder_layer.py:51-70`
 - Official config: `operation_order=('self_attn', 'norm', 'cross_attn', 'norm', 'ffn', 'norm')`
+- Official source: [`detr3d_res101_gridmask.py`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/configs/detr3d/detr3d_res101_gridmask.py), under `model.pts_bbox_head.transformer.decoder.transformerlayers.operation_order`
 
 Why the difference matters:
 
@@ -97,6 +104,7 @@ References:
 
 - `detr3d/models/transformer/cross_attention.py:69-75`
 - `detr3d/models/transformer/decoder_layer.py:54-61`
+- Official source: [`Detr3DCrossAtten.forward`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/models/utils/detr3d_transformer.py), whose return expression is `self.dropout(output) + inp_residual + pos_feat`
 
 Why the difference matters:
 
@@ -120,6 +128,7 @@ References:
 - `detr3d/models/transformer/cross_attention.py:27-35`
 - `detr3d/models/transformer/decoder.py:25-38`
 - `detr3d/models/heads/detr3d_head.py:61-73`
+- Official source: [`Detr3DTransformer.init_weights` and `Detr3DCrossAtten.init_weight`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/models/utils/detr3d_transformer.py)
 
 Why the difference matters:
 
@@ -141,7 +150,10 @@ Official DETR3D decoder FFN:
 256 -> 512 -> 256
 ```
 
-Reference: `detr3d/models/transformer/decoder_layer.py:32-37`
+References:
+
+- Current: `detr3d/models/transformer/decoder_layer.py:32-37`
+- Official source: [`detr3d_res101_gridmask.py`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/configs/detr3d/detr3d_res101_gridmask.py), under `model.pts_bbox_head.transformer.decoder.transformerlayers.feedforward_channels=512`
 
 Why the difference matters:
 
