@@ -365,6 +365,19 @@ def main() -> None:
             tables=dataset.tables,
             official_image_preprocessing=args.official_image_preprocessing,
         )
+    elif args.photometric_distortion and (args.eval_sample_indices or args.num_eval_samples > 0):
+        eval_dataset = NuScenesDetr3DDataset(
+            dataroot=args.dataroot,
+            version=args.version,
+            image_size=(args.image_height, args.image_width),
+            max_samples=args.max_samples,
+            split=args.dataset_split,
+            filter_gt_by_range=args.filter_gt_by_range,
+            filter_zero_point_gt=args.filter_zero_point_gt,
+            tables=dataset.tables,
+            official_image_preprocessing=args.official_image_preprocessing,
+            photometric_distortion=False,
+        )
     mlflow_run = _start_mlflow_run(args, len(dataset), output_dir)
     if mlflow_run is not None:
         mlflow_run.log_param("eval_dataset_size", len(eval_dataset))
