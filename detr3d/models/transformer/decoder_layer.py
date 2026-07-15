@@ -59,7 +59,7 @@ class Detr3DDecoderLayer(nn.Module):
             img_metas=img_metas,
             query_pos=query_pos,
         )
-        query = self.norm2(query + self.dropout(cross))
+        query = self.norm2(cross)
 
         ff = self.ffn(query)
         return self.norm3(query + self.dropout(ff))
