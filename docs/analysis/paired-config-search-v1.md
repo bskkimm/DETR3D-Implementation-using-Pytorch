@@ -37,4 +37,23 @@ thermal protection with 90 C as the critical temperature.
 
 ## Results
 
-Pending.
+### Three-Seed One-Sample Gate
+
+All variants completed 60 epochs at native resolution without non-finite
+losses or execution failures. Values are means across seeds 0, 1, and 2.
+
+| Variant | Mean center | Mean median center | Mean class match |
+|---|---:|---:|---:|
+| B0 | 1.9161 m | 1.1459 m | 80.00% |
+| C1 | 2.4432 m | 1.7515 m | 80.00% |
+| C2 | 2.1286 m | 1.6153 m | 76.67% |
+| C3 | 2.3077 m | 1.1368 m | 83.33% |
+| C4 | 3.3753 m | 2.2110 m | 43.33% |
+| C5 | 2.2706 m | 1.3478 m | 66.67% |
+| C6 | 3.1882 m | 1.7015 m | 70.00% |
+
+C4 shows a material one-sample regression, while C5 demonstrates that the
+FCOS3D initialization recovers much of the uninitialized official image-path
+gap. One-sample performance is not the promotion metric, and every variant
+completed the execution gate, so all B0-C6 variants proceed to the paired
+256/256 experiment as specified. Small experiments do not use MLflow.
