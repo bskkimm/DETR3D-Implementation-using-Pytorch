@@ -36,6 +36,14 @@ class Detr3DTransformer(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for parameter in self.parameters():
+            if parameter.ndim > 1:
+                nn.init.xavier_uniform_(parameter)
+        for layer in self.layers:
+            layer.cross_attn.reset_parameters()
 
     def init_decoder_state(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1).to(device)

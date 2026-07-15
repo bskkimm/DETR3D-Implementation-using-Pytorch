@@ -62,6 +62,8 @@ class Detr3DHead(nn.Module):
         prior_prob = 0.01
         cls_bias = -math.log((1 - prior_prob) / prior_prob)
 
+        nn.init.xavier_uniform_(self.reference_points.weight)
+
         for cls_branch in self.cls_branches:
             final_linear = cls_branch.net[-1]
             nn.init.constant_(final_linear.bias, cls_bias)

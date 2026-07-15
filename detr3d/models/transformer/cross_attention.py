@@ -34,6 +34,13 @@ class Detr3DCrossAttention(nn.Module):
             nn.LayerNorm(embed_dims),
             nn.ReLU(inplace=True),
         )
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.attention_weights.weight)
+        nn.init.zeros_(self.attention_weights.bias)
+        nn.init.xavier_uniform_(self.output_proj.weight)
+        nn.init.zeros_(self.output_proj.bias)
 
     def forward(
         self,
