@@ -204,6 +204,12 @@ def run_matrix(args: argparse.Namespace, manifest: dict) -> None:
                 raise
             status["status"] = "completed"
             status["finished_at"] = datetime.now(timezone.utc).isoformat()
+            if args.phase == "small":
+                removed = []
+                for checkpoint_path in run_dir.glob("*.pt"):
+                    removed.append(checkpoint_path.name)
+                    checkpoint_path.unlink()
+                status["removed_checkpoints"] = sorted(removed)
             status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
 
 
