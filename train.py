@@ -24,6 +24,7 @@ from detr3d.engine.diagnostics import (
 from detr3d.engine.trainer import fit
 from detr3d.models import Detr3DModel
 from detr3d.models.backbone import MultiViewImageBackbone
+from detr3d.models.checkpoint import load_fcos3d_initialization
 from detr3d.models.heads import Detr3DHead
 from detr3d.models.losses import Detr3DLoss
 from detr3d.models.neck import ImageFPN
@@ -62,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-pretrained-backbone", action="store_true")
     parser.add_argument("--official-image-backbone", action="store_true")
     parser.add_argument("--official-image-preprocessing", action="store_true")
+    parser.add_argument("--init-fcos3d-checkpoint", type=str, default=None)
     parser.add_argument("--num-queries", type=int, default=900)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
@@ -329,6 +331,10 @@ def main() -> None:
         torch.set_float32_matmul_precision("high")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume is not None and args.init_fcos3d_checkpoint is not None:
+        raise ValueError("--resume and --init-fcos3d-checkpoint cannot be used together")
+    if args.init_fcos3d_checkpoint is not None and not args.official_image_backbone:
+        raise ValueError("--init-fcos3d-checkpoint requires --official-image-backbone")
 
     dataset = NuScenesDetr3DDataset(
         dataroot=args.dataroot,
@@ -379,6 +385,14 @@ def main() -> None:
         pretrained_backbone=not args.disable_pretrained_backbone,
         official_image_backbone=args.official_image_backbone,
     ).to(device)
+    if args.init_fcos3d_checkpoint is not None:
+        initialization_report = load_fcos3d_initialization(model, args.init_fcos3d_checkpoint)
+        report_path = output_dir / "initialization_report.json"
+        report_path.write_text(json.dumps(initialization_report, indent=2), encoding="utf-8")
+        print(
+            f"FCOS3D initialization loaded {initialization_report['loaded_tensors']} tensors "
+            f"with {initialization_report['coverage']:.2%} backbone/FPN coverage"
+        )
     criterion = Detr3DLoss(
         num_classes=10,
         loss_cls_weight=args.loss_cls_weight,
