@@ -280,6 +280,16 @@ All rows use the same deterministic 64-train-sample, 32-validation-sample,
 100-query, no-AMP setup. These nearest-center diagnostics select a candidate;
 they do not replace official nuScenes evaluation.
 
+In this section, **baseline** means a freshly trained `f157748` control under
+that exact small-run recipe. `f157748` contains the threshold and evaluator
+work but no loss, matcher, or transformer training-path change relative to the
+recovery starting point. It is therefore the paired control for every later
+commit. It is not the canonical one-sample baseline and is not the trained
+24-epoch full-dataset checkpoint. The absolute results are expected to be much
+poorer than those runs because this experiment trains on only 64 samples and
+measures generalization on 32 held-out validation samples; earlier strong
+64-sample numbers evaluated the training subset and measured memorization.
+
 | Commit | Cumulative change | Epoch 20 mean center | Epoch 20 median center | Epoch 20 class match |
 |---|---|---:|---:|---:|
 | `f157748` | Evaluation-only baseline | 3.7094 m | 2.9308 m | 429/1078 (39.80%) |
@@ -305,14 +315,20 @@ for this 1,920-step small run; it still rejected `f110486` relative to the
 paired baseline. The corrected pair used 13 warmup steps, approximately the
 same fraction of total updates as the 500-step full-training warmup:
 
-| Commit | Epoch | Mean center | Median center | Class match |
-|---|---:|---:|---:|---:|
-| `f157748` | 20 | 3.9787 m | 2.9681 m | 30.89% |
-| `f110486` | 20 | 4.3762 m | 3.2757 m | 37.48% |
-| `f157748` | 40 | 4.5346 m | 3.3973 m | 44.25% |
-| `f110486` | 40 | 4.7006 m | 3.7230 m | 22.91% |
-| `f157748` | 60 | 4.4561 m | 3.4523 m | 35.44% |
-| `f110486` | 60 | 4.7432 m | 3.6129 m | 18.46% |
+| Commit | Role | Epoch | Mean center | Median center | Class match |
+|---|---|---:|---:|---:|---:|
+| `f157748` | Paired baseline | 20 | 3.9787 m | 2.9681 m | 30.89% |
+| `f110486` | Candidate | 20 | 4.3762 m | 3.2757 m | 37.48% |
+| `f157748` | Paired baseline | 40 | 4.5346 m | 3.3973 m | 44.25% |
+| `f110486` | Candidate | 40 | 4.7006 m | 3.7230 m | 22.91% |
+| `f157748` | Paired baseline | 60 | 4.4561 m | 3.4523 m | 35.44% |
+| `f110486` | Candidate | 60 | 4.7432 m | 3.6129 m | 18.46% |
+
+Relative to the paired baseline at the same epoch, `f110486` changes mean
+center distance/class match by +0.3975 m/+6.59 points at epoch 20,
++0.1660 m/-21.34 points at epoch 40, and +0.2871 m/-16.98 points at epoch 60.
+Lower center distance is better, so only the epoch-20 class result improves;
+the candidate does not provide a balanced or stable gain.
 
 This confirmation revokes the provisional `f110486` selection. No tested
 recovery configuration currently passes the promotion gate, so full training
