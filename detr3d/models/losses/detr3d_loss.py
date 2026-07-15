@@ -24,7 +24,7 @@ class Detr3DLoss:
         use_auxiliary_losses: bool = True,
         alpha: float = 0.25,
         gamma: float = 2.0,
-        bg_cls_weight: float = 0.1,
+        bg_cls_weight: float = 0.0,
         box_group_weights = (1.0, 1.0, 1.0, 1.0),
         debug: bool = False,
     ):

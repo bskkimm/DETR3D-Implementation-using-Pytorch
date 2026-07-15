@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss-cls-weight", type=float, default=2.0)
     parser.add_argument("--focal-alpha", type=float, default=0.25)
     parser.add_argument("--focal-gamma", type=float, default=2.0)
-    parser.add_argument("--bg-cls-weight", type=float, default=0.1)
+    parser.add_argument("--bg-cls-weight", type=float, default=0.0)
     parser.add_argument("--scheduler", type=str, default="multistep", choices=["multistep", "cosine", "none"])
     parser.add_argument("--scheduler-milestones", type=int, nargs="*", default=[8, 11])
     parser.add_argument("--scheduler-gamma", type=float, default=0.1)
