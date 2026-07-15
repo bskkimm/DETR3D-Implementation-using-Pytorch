@@ -215,8 +215,8 @@ The current checkpoint must not be described as an official nuScenes-quality res
 |---|---|---|---|---|
 | EVAL-1 | P0 | Add official-style flattened query-class decoding, post-center filtering, and nuScenes result export/evaluation | Produce per-class AP, mAP, NDS, and TP errors on val | Implemented; full val pending |
 | EVAL-2 | P0 | Separate visualization threshold from regression diagnostics and remove the threshold fallback | Images contain only boxes at or above the requested threshold | Complete |
-| LOSS-1 | P0 | Restore official focal settings, classification weight, and background normalization | One-sample regression passes; query score distribution shows stronger background suppression | Implemented; selected with MATCH-1 |
-| MATCH-1 | P0 | Exclude velocity dimensions from Hungarian assignment cost | Unit test confirms assignment uses encoded dimensions 0:8 | Implemented; provisional candidate |
+| LOSS-1 | P0 | Restore official focal settings, classification weight, and background normalization | One-sample regression passes; query score distribution shows stronger background suppression | Implemented; not yet promoted |
+| MATCH-1 | P0 | Exclude velocity dimensions from Hungarian assignment cost | Unit test confirms assignment uses encoded dimensions 0:8 | Implemented; rejected by scheduler gate |
 | ARCH-1 | P0 | Restore self-attention-before-cross-attention order | Unit test records the official operation sequence | Implemented; not selected by screening |
 | ARCH-2 | P0 | Restore official cross-attention residual/dropout semantics | Unit test checks one residual and one visual-feature dropout path | Implemented; regressed screening |
 | ARCH-3 | P0 | Restore official Xavier and zero attention initialization | Parameter initialization tests pass | Implemented; regressed screening |
@@ -259,6 +259,27 @@ produce a stable winner: the baseline ended at 3.9961 m/25.05%, `f110486` at
 that this small-run recipe overfits and must not be used to justify full
 training without a scheduler-controlled confirmation.
 
+The scheduler-controlled confirmation used cosine decay over 60 epochs. A
+first pair retained the CLI default of 500 warmup steps, which is too large
+for this 1,920-step small run; it still rejected `f110486` relative to the
+paired baseline. The corrected pair used 13 warmup steps, approximately the
+same fraction of total updates as the 500-step full-training warmup:
+
+| Commit | Epoch | Mean center | Median center | Class match |
+|---|---:|---:|---:|---:|
+| `f157748` | 20 | 3.9787 m | 2.9681 m | 30.89% |
+| `f110486` | 20 | 4.3762 m | 3.2757 m | 37.48% |
+| `f157748` | 40 | 4.5346 m | 3.3973 m | 44.25% |
+| `f110486` | 40 | 4.7006 m | 3.7230 m | 22.91% |
+| `f157748` | 60 | 4.4561 m | 3.4523 m | 35.44% |
+| `f110486` | 60 | 4.7432 m | 3.6129 m | 18.46% |
+
+This confirmation revokes the provisional `f110486` selection. No tested
+recovery configuration currently passes the promotion gate, so full training
+remains blocked. The official architecture changes should next be evaluated
+with the missing detector-level initialization rather than hidden by further
+small-run hyperparameter tuning.
+
 ## Decision Log
 
 | Date | Decision | Reason |
@@ -268,6 +289,8 @@ training without a scheduler-controlled confirmation.
 | 2026-07-15 | Require official nuScenes metrics before another quality claim | Existing nearest-prediction diagnostics ignore false positives and many-to-one matching |
 | 2026-07-15 | Provisionally select `f110486` for the next controlled experiment | It gives the best epoch-20 geometry/classification balance; later architecture changes regress localization |
 | 2026-07-15 | Do not promote the cumulative full-parity stack yet | Its class matching rises to 66.88% by epoch 60 while mean center distance worsens to 4.8478 m |
+| 2026-07-15 | Revoke provisional selection of `f110486` | In the corrected cosine gate, the paired baseline has better localization at epochs 20, 40, and 60 and better final class matching |
+| 2026-07-15 | Keep full retraining blocked | No tested recovery configuration improves both localization and classification under the confirmation recipe |
 
 ## Updating This Document
 
