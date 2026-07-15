@@ -163,9 +163,18 @@ Confidence: High for the mismatch; low-medium for its independent quality impact
 
 ## Other Root Causes
 
+Official behavior cited below is sourced from the same commit-pinned upstream
+DETR3D repository used in the transformer comparison.
+
 ### P0: Visualization and Diagnostic Decoding
 
 `detr3d/engine/diagnostics.py` uses a 0.005 threshold, selects up to 100 max-class queries, and renders every selected prediction. It does not use official flattened query-class top-k decoding or post-center-range filtering. Its fallback also returns top-k predictions when no prediction passes the requested threshold.
+
+References:
+
+- Current: `detr3d/engine/diagnostics.py`
+- Official source: [`NMSFreeCoder.decode_single`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/core/bbox/coders/nms_free_coder.py), which flattens sigmoid query-class scores, applies global top-k, maps results back to query/class indices, and filters decoded centers by `post_center_range`
+- Official config: [`bbox_coder`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/configs/detr3d/detr3d_res101_gridmask.py), which defines `NMSFreeCoder`, `post_center_range`, and `max_num`
 
 Impact: This is the direct cause of the apparent 100-box explosion in generated images. It does not explain genuine high-confidence misses or center errors.
 
@@ -183,6 +192,13 @@ Official settings:
 loss_cls_weight=2.0, alpha=0.25, gamma=2.0, bg_cls_weight=0
 ```
 
+References:
+
+- Current loss implementation: `detr3d/models/losses/detr3d_loss.py`; the historical full-run overrides are recorded above
+- Official config: [`loss_cls`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/configs/detr3d/detr3d_res101_gridmask.py), which sets sigmoid focal loss with `loss_weight=2.0`, `alpha=0.25`, and `gamma=2.0`
+- Official source: [`Detr3DHead.loss_single`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/models/dense_heads/detr3d_head.py), which computes `cls_avg_factor` from positive and negative counts using the inherited sigmoid-classification background weight
+- Inherited base source: [`MMDetection DETRHead`](https://github.com/open-mmlab/mmdetection/blob/v2.14.0/mmdet/models/dense_heads/detr_head.py), which initializes `bg_cls_weight=0`; v2.14.0 is the minimum MMDetection version declared by the official repository's pinned MMDetection3D dependency
+
 With about 23 positives and 900 queries, the local classification denominator is approximately 110.7 instead of approximately 23. This makes positive classification gradients roughly 4.8 times weaker before focal-state effects; background gradients can be weakened further by the loss-weight and alpha differences.
 
 Impact: Poor background suppression, weak score calibration, excess nontrivial query scores, and class confusion. The final low classification loss is not evidence that classification converged well because its scale changed.
@@ -191,11 +207,23 @@ Impact: Poor background suppression, weak score calibration, excess nontrivial q
 
 The current matcher computes L1 assignment cost over all encoded 10 dimensions. Official DETR3D uses only the first eight and excludes velocity. Local velocities are reconstructed from annotation finite differences and are included in matching at full weight even though the final bbox loss weights velocity by 0.2.
 
+References:
+
+- Current: `detr3d/models/losses/matcher.py`
+- Official source: [`HungarianAssigner3D.assign`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/core/bbox/assigners/hungarian_assigner_3d.py), which calls `reg_cost(bbox_pred[:, :8], normalized_gt_bboxes[:, :8])`
+- Official source: [`Detr3DHead.code_weights`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/models/dense_heads/detr3d_head.py), which assigns weights `0.2, 0.2` to the two velocity dimensions in the final bbox loss
+
 Impact: Noisy velocity can change query-to-GT assignments and corrupt both class and center supervision.
 
 ### P1: Weaker Feature Initialization and Generalization
 
 Official DETR3D loads an FCOS3D checkpoint and uses Caffe-style ResNet-101, modulated DCNv2, GridMask, and multiview photometric augmentation. The current model uses ImageNet-only initialization, an unmodulated deformable convolution, and no equivalent augmentation.
+
+References:
+
+- Current: `detr3d/models/backbone/image_backbone.py` and `detr3d/data/transforms.py`
+- Official config: [`detr3d_res101_gridmask.py`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/configs/detr3d/detr3d_res101_gridmask.py), which sets `style='caffe'`, `dcn=dict(type='DCNv2', ...)`, `use_grid_mask=True`, `PhotoMetricDistortionMultiViewImage`, and `load_from='ckpts/fcos3d.pth'`
+- Official source: [`Detr3D.extract_img_feat`](https://github.com/WangYueFt/detr3d/blob/34a47673011fe13593a3e594a376668acca8bddb/projects/mmdet3d_plugin/models/detectors/detr3d.py), which applies GridMask before the image backbone when enabled
 
 Impact: Weaker detector features and poorer validation generalization, especially for small, distant, and rare objects.
 
