@@ -134,7 +134,9 @@ class HungarianMatcher3D:
                 alpha=self.alpha,
                 gamma=self.gamma,
             )
-            bbox_cost = _box_l1_cost_matrix(box_preds[batch_idx], encoded_gt)
+            bbox_cost = _box_l1_cost_matrix(
+                box_preds[batch_idx, :, :8], encoded_gt[:, :8]
+            )
             total_cost = self.cls_weight * cls_cost + self.bbox_weight * bbox_cost
             pred_ids, gt_ids = _linear_sum_assignment(total_cost.clone())
             assignments.append((pred_ids, gt_ids))
