@@ -97,3 +97,14 @@ def test_decoder_does_not_add_second_cross_attention_residual():
     )
 
     torch.testing.assert_close(output, torch.full((1, 1, 4), 7.0))
+
+
+def test_decoder_ffn_has_official_width_512():
+    layer = Detr3DDecoderLayer()
+    linears = [module for module in layer.ffn if isinstance(module, nn.Linear)]
+
+    assert len(linears) == 2
+    assert linears[0].in_features == 256
+    assert linears[0].out_features == 512
+    assert linears[1].in_features == 512
+    assert linears[1].out_features == 256

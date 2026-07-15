@@ -17,6 +17,7 @@ class Detr3DDecoderLayer(nn.Module):
         num_heads: int = 8,
         num_cams: int = 6,
         num_levels: int = 4,
+        ffn_channels: int = 512,
         dropout: float = 0.1,
         pc_range = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
     ):
@@ -30,10 +31,10 @@ class Detr3DDecoderLayer(nn.Module):
             dropout=dropout,
         )
         self.ffn = nn.Sequential(
-            nn.Linear(embed_dims, embed_dims * 4),
+            nn.Linear(embed_dims, ffn_channels),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(embed_dims * 4, embed_dims),
+            nn.Linear(ffn_channels, embed_dims),
         )
         self.norm1 = nn.LayerNorm(embed_dims)
         self.norm2 = nn.LayerNorm(embed_dims)
