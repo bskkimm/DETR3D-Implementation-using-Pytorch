@@ -8,7 +8,17 @@ from pathlib import Path
 import torch
 
 from detr3d.data import NuScenesDetr3DDataset
-from detr3d.engine.diagnostics import evaluate_samples, parse_sample_indices, write_summary_json
+from detr3d.engine.diagnostics import (
+    evaluate_samples,
+    parse_sample_indices,
+    write_summary_json,
+)
+from detr3d.engine.evaluator import (
+    OFFICIAL_MAX_NUM,
+    OFFICIAL_POST_CENTER_RANGE,
+    export_nuscenes_results,
+    run_nuscenes_evaluation,
+)
 from detr3d.models import Detr3DModel
 from detr3d.models.backbone import MultiViewImageBackbone
 from detr3d.models.heads import Detr3DHead
@@ -17,7 +27,9 @@ from detr3d.models.transformer import Detr3DTransformer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a trained pure PyTorch DETR3D checkpoint.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate a trained pure PyTorch DETR3D checkpoint."
+    )
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--dataroot", type=str, default="/home/user/datasets/nuscenes")
     parser.add_argument("--version", type=str, default="v1.0-trainval")
@@ -25,7 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-indices", type=str, default=None)
     parser.add_argument("--num-eval-samples", type=int, default=1)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
+    parser.add_argument(
+        "--dataset-split",
+        type=str,
+        default=None,
+        choices=["train", "val", "mini_train", "mini_val"],
+    )
     parser.add_argument("--image-height", type=int, default=900)
     parser.add_argument("--image-width", type=int, default=1600)
     parser.add_argument("--filter-gt-by-range", action="store_true")
@@ -39,14 +56,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-overlay-dir", type=str, default=None)
     parser.add_argument("--save-bev-dir", type=str, default=None)
     parser.add_argument("--summary-out", type=str, default=None)
+    parser.add_argument("--nuscenes-results-out", type=str, default=None)
+    parser.add_argument("--run-nuscenes-eval", action="store_true")
+    parser.add_argument("--nuscenes-eval-output-dir", type=str, default=None)
+    parser.add_argument(
+        "--nuscenes-eval-set",
+        type=str,
+        default=None,
+        choices=["train", "val", "mini_train", "mini_val", "test"],
+    )
+    parser.add_argument(
+        "--nuscenes-eval-config", type=str, default="detection_cvpr_2019"
+    )
+    parser.add_argument("--official-max-boxes", type=int, default=OFFICIAL_MAX_NUM)
+    parser.add_argument(
+        "--post-center-range", type=float, nargs=6, default=OFFICIAL_POST_CENTER_RANGE
+    )
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     return parser.parse_args()
 
 
-def build_model(num_queries: int, backbone_name: str, pretrained_backbone: bool) -> Detr3DModel:
+def build_model(
+    num_queries: int, backbone_name: str, pretrained_backbone: bool
+) -> Detr3DModel:
     return Detr3DModel(
-        backbone=MultiViewImageBackbone(variant=backbone_name, pretrained=pretrained_backbone),
+        backbone=MultiViewImageBackbone(
+            variant=backbone_name, pretrained=pretrained_backbone
+        ),
         neck=ImageFPN(),
         transformer=Detr3DTransformer(num_queries=num_queries, num_levels=4),
         head=Detr3DHead(num_decoder_layers=6),
@@ -76,10 +115,56 @@ def main() -> None:
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict)
 
+    if args.nuscenes_results_out is not None:
+        if args.dataset_split is None:
+            raise ValueError("--dataset-split is required for nuScenes result export")
+        if args.run_nuscenes_eval:
+            if args.nuscenes_eval_output_dir is None or args.nuscenes_eval_set is None:
+                raise ValueError(
+                    "nuScenes evaluation requires --nuscenes-eval-output-dir "
+                    "and --nuscenes-eval-set"
+                )
+            if args.dataset_split != args.nuscenes_eval_set:
+                raise ValueError("--dataset-split must match --nuscenes-eval-set")
+            if (
+                args.max_samples is not None
+                or args.sample_index is not None
+                or args.sample_indices is not None
+            ):
+                raise ValueError(
+                    "Official nuScenes evaluation requires the complete split"
+                )
+        result_path = export_nuscenes_results(
+            model=model,
+            dataset=dataset,
+            device=device,
+            output_path=args.nuscenes_results_out,
+            max_num=args.official_max_boxes,
+            post_center_range=args.post_center_range,
+            eval_config_name=args.nuscenes_eval_config,
+            verbose=not args.quiet,
+        )
+        print(f"Saved nuScenes results to {result_path}")
+        if args.run_nuscenes_eval:
+            run_nuscenes_evaluation(
+                dataroot=args.dataroot,
+                version=args.version,
+                result_path=result_path,
+                eval_set=args.nuscenes_eval_set,
+                output_dir=args.nuscenes_eval_output_dir,
+                eval_config_name=args.nuscenes_eval_config,
+                verbose=not args.quiet,
+            )
+        return
+    if args.run_nuscenes_eval:
+        raise ValueError("--run-nuscenes-eval requires --nuscenes-results-out")
+
     if args.sample_index is not None:
         sample_indices = [args.sample_index]
     else:
-        sample_indices = parse_sample_indices(args.sample_indices, len(dataset), limit=args.num_eval_samples)
+        sample_indices = parse_sample_indices(
+            args.sample_indices, len(dataset), limit=args.num_eval_samples
+        )
 
     summary = evaluate_samples(
         model=model,
@@ -94,9 +179,16 @@ def main() -> None:
     )
 
     if args.plot_bev and args.save_bev_dir is None:
-        print("`--plot-bev` is informational only here. Use `--save-bev-dir` to persist BEV figures.")
+        print(
+            "`--plot-bev` is informational only here. Use `--save-bev-dir` "
+            "to persist BEV figures."
+        )
 
-    summary_out = Path(args.summary_out) if args.summary_out else Path(args.checkpoint).with_suffix(".eval.json")
+    summary_out = (
+        Path(args.summary_out)
+        if args.summary_out
+        else Path(args.checkpoint).with_suffix(".eval.json")
+    )
     write_summary_json(summary_out, summary)
     print(f"\nSaved summary to {summary_out}")
 
