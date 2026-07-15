@@ -1,0 +1,81 @@
+{
+  "matrix_id": "paired-config-search-v1",
+  "dataset": {
+    "dataroot": "/home/beomseokkim2/dataset/nuscenes",
+    "version": "v1.0-trainval",
+    "train_samples": 256,
+    "val_samples": 256,
+    "train_token_sha256": "597cab6f0552e5e5a6ab9cd06f3d5e958db69a59766e8da245ab57bd00446dd3",
+    "val_token_sha256": "57d9c9995768ba93b90c4e99399bbf6aa86b2cedb7a96fbc9f2e23033a3a3ac5"
+  },
+  "seeds": [0, 1, 2],
+  "protocol": {
+    "epochs": 60,
+    "eval_epochs": [20, 40, 60],
+    "image_height": 900,
+    "image_width": 1600,
+    "num_queries": 900,
+    "batch_size": 2,
+    "num_workers": 2,
+    "scheduler": "cosine",
+    "warmup_steps": 17,
+    "min_lr_ratio": 0.001,
+    "lr": 0.0002,
+    "backbone_lr_mult": 0.1,
+    "weight_decay": 0.01,
+    "grad_clip_norm": 35.0
+  },
+  "promotion_gate": {
+    "minimum_center_improvement_fraction": 0.03,
+    "minimum_class_match_improvement_points": 3.0,
+    "minimum_seed_wins": 2,
+    "require_multiple_checkpoint_wins": true
+  },
+  "variants": {
+    "B0": {
+      "commit": "c360062",
+      "description": "Previous model, loss, matcher, and transformer configuration"
+    },
+    "C1": {
+      "commit": "4c396c5",
+      "description": "B0 plus official classification objective"
+    },
+    "C2": {
+      "commit": "6e1b63c",
+      "description": "C1 plus velocity-free Hungarian matching"
+    },
+    "C3": {
+      "commit": "361d328",
+      "description": "C2 plus full official transformer architecture parity"
+    },
+    "C4": {
+      "commit": "23cae53",
+      "description": "C3 plus Caffe ResNet, modulated DCNv2, official preprocessing and FPN",
+      "extra_args": ["--official-image-backbone", "--official-image-preprocessing"]
+    },
+    "C5": {
+      "commit": "77b6469",
+      "description": "C4 plus official FCOS3D backbone/FPN initialization",
+      "extra_args": [
+        "--official-image-backbone",
+        "--official-image-preprocessing",
+        "--disable-pretrained-backbone",
+        "--init-fcos3d-checkpoint",
+        "/tmp/opencode/detr3d_checkpoints/fcos3d.pth"
+      ]
+    },
+    "C6": {
+      "commit": "e5d263b",
+      "description": "C5 plus GridMask and multiview photometric distortion",
+      "extra_args": [
+        "--official-image-backbone",
+        "--official-image-preprocessing",
+        "--disable-pretrained-backbone",
+        "--init-fcos3d-checkpoint",
+        "/tmp/opencode/detr3d_checkpoints/fcos3d.pth",
+        "--grid-mask",
+        "--photometric-distortion"
+      ]
+    }
+  }
+}
