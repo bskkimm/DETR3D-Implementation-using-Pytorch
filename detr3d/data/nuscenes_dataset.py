@@ -13,7 +13,6 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-
 CAMERA_NAMES = [
     "CAM_FRONT",
     "CAM_FRONT_LEFT",
@@ -89,6 +88,23 @@ def resize_and_normalize_image(image: Image.Image, image_size=(900, 1600)) -> to
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     array = (array - mean) / std
     return torch.tensor(array, dtype=torch.float32).permute(2, 0, 1)
+
+
+def resize_and_normalize_official_image(
+    image: Image.Image,
+    image_size: tuple[int, int] = (900, 1600),
+    size_divisor: int = 32,
+) -> torch.Tensor:
+    if image.size != (image_size[1], image_size[0]):
+        image = image.resize((image_size[1], image_size[0]))
+    array = np.asarray(image, dtype=np.float32)[..., ::-1].copy()
+    mean = np.array([103.530, 116.280, 123.675], dtype=np.float32)
+    array = array - mean
+    pad_height = math.ceil(image_size[0] / size_divisor) * size_divisor
+    pad_width = math.ceil(image_size[1] / size_divisor) * size_divisor
+    padded = np.zeros((pad_height, pad_width, 3), dtype=np.float32)
+    padded[: image_size[0], : image_size[1]] = array
+    return torch.from_numpy(padded).permute(2, 0, 1)
 
 
 def category_to_detection_class(category_name: str) -> str | None:
@@ -196,6 +212,7 @@ class NuScenesDetr3DDataset(Dataset):
         filter_zero_point_gt: bool = False,
         point_cloud_range: tuple[float, float, float, float, float, float] = DEFAULT_POINT_CLOUD_RANGE,
         tables: NuScenesTables | None = None,
+        official_image_preprocessing: bool = False,
     ):
         self.dataroot = Path(dataroot)
         self.version = version
@@ -203,6 +220,7 @@ class NuScenesDetr3DDataset(Dataset):
         self.filter_gt_by_range = filter_gt_by_range
         self.filter_zero_point_gt = filter_zero_point_gt
         self.point_cloud_range = point_cloud_range
+        self.official_image_preprocessing = official_image_preprocessing
         self.tables = tables or NuScenesTables.from_dataroot(self.dataroot, version)
         samples = self.tables.samples
         if split is not None:
@@ -337,9 +355,13 @@ class NuScenesDetr3DDataset(Dataset):
             record = camera_records[camera_name]
             image_path = self.dataroot / record["filename"]
             image = Image.open(image_path).convert("RGB")
-            images.append(resize_and_normalize_image(image, image_size=self.image_size))
+            if self.official_image_preprocessing:
+                image_tensor = resize_and_normalize_official_image(image, image_size=self.image_size)
+            else:
+                image_tensor = resize_and_normalize_image(image, image_size=self.image_size)
+            images.append(image_tensor)
             lidar2img.append(torch.tensor(self._build_lidar2img(lidar_record, record), dtype=torch.float32))
-            image_shape.append(torch.tensor(self.image_size, dtype=torch.float32))
+            image_shape.append(torch.tensor(image_tensor.shape[-2:], dtype=torch.float32))
 
         gt_boxes_lidar, gt_labels = self._build_gt_targets(sample_record, lidar_record)
         return {

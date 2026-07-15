@@ -17,9 +17,11 @@ class ImageFPN(nn.Module):
         in_channels: Iterable[int] = (512, 1024, 2048),
         out_channels: int = 256,
         out_names: Iterable[str] = ("p3", "p4", "p5", "p6"),
+        relu_before_extra_convs: bool = False,
     ):
         super().__init__()
         self.out_names = list(out_names)
+        self.relu_before_extra_convs = relu_before_extra_convs
         self.lateral_convs = nn.ModuleList([nn.Conv2d(ch, out_channels, kernel_size=1) for ch in in_channels])
         self.output_convs = nn.ModuleList(
             [nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1) for _ in in_channels]
@@ -46,7 +48,8 @@ class ImageFPN(nn.Module):
         # The 3x3 output convolutions smooth the fused maps after upsampling/addition.
         outputs = [conv(feat) for conv, feat in zip(self.output_convs, laterals)]
         # P6 is an extra coarser level built by stride-2 downsampling of P5.
-        outputs.append(self.extra_conv(outputs[-1]))
+        extra_input = F.relu(outputs[-1]) if self.relu_before_extra_convs else outputs[-1]
+        outputs.append(self.extra_conv(extra_input))
 
         pyramid: Dict[str, torch.Tensor] = {}
         for out_name, feat in zip(self.out_names, outputs):

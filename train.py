@@ -60,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filter-zero-point-gt", action="store_true")
     parser.add_argument("--backbone", type=str, default="resnet101")
     parser.add_argument("--disable-pretrained-backbone", action="store_true")
+    parser.add_argument("--official-image-backbone", action="store_true")
+    parser.add_argument("--official-image-preprocessing", action="store_true")
     parser.add_argument("--num-queries", type=int, default=900)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
@@ -282,10 +284,19 @@ class ThermalSafetyMonitor:
         print("thermal resume")
 
 
-def build_model(num_queries: int, backbone_name: str, pretrained_backbone: bool) -> Detr3DModel:
+def build_model(
+    num_queries: int,
+    backbone_name: str,
+    pretrained_backbone: bool,
+    official_image_backbone: bool = False,
+) -> Detr3DModel:
     return Detr3DModel(
-        backbone=MultiViewImageBackbone(variant=backbone_name, pretrained=pretrained_backbone),
-        neck=ImageFPN(),
+        backbone=MultiViewImageBackbone(
+            variant=backbone_name,
+            pretrained=pretrained_backbone,
+            official_style=official_image_backbone,
+        ),
+        neck=ImageFPN(relu_before_extra_convs=official_image_backbone),
         transformer=Detr3DTransformer(num_queries=num_queries, num_levels=4),
         head=Detr3DHead(num_decoder_layers=6),
     )
@@ -327,6 +338,7 @@ def main() -> None:
         split=args.dataset_split,
         filter_gt_by_range=args.filter_gt_by_range,
         filter_zero_point_gt=args.filter_zero_point_gt,
+        official_image_preprocessing=args.official_image_preprocessing,
     )
     eval_dataset = dataset
     if args.val_split is not None:
@@ -339,6 +351,7 @@ def main() -> None:
             filter_gt_by_range=args.filter_gt_by_range,
             filter_zero_point_gt=args.filter_zero_point_gt,
             tables=dataset.tables,
+            official_image_preprocessing=args.official_image_preprocessing,
         )
     mlflow_run = _start_mlflow_run(args, len(dataset), output_dir)
     if mlflow_run is not None:
@@ -364,6 +377,7 @@ def main() -> None:
         num_queries=args.num_queries,
         backbone_name=args.backbone,
         pretrained_backbone=not args.disable_pretrained_backbone,
+        official_image_backbone=args.official_image_backbone,
     ).to(device)
     criterion = Detr3DLoss(
         num_classes=10,
