@@ -5,15 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import random
 import subprocess
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from detr3d.data import NuScenesDetr3DDataset, detr3d_collate
-from detr3d.engine.diagnostics import evaluate_samples, parse_sample_indices, write_summary_json
+from detr3d.engine.diagnostics import (
+    evaluate_samples,
+    parse_sample_indices,
+    write_summary_json,
+)
 from detr3d.engine.trainer import fit
 from detr3d.models import Detr3DModel
 from detr3d.models.backbone import MultiViewImageBackbone
@@ -70,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-eval-artifacts", action="store_true")
     parser.add_argument("--disable-auxiliary-losses", action="store_true")
     parser.add_argument("--use-amp", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--mlflow", action="store_true")
     parser.add_argument("--mlflow-tracking-uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--mlflow-experiment", type=str, default="detr3d-small-training")
@@ -84,6 +93,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thermal-poll-interval", type=float, default=30.0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
+
+
+def set_seed(seed: int, deterministic: bool) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+def seed_worker(worker_id: int) -> None:
+    del worker_id
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
+def capture_rng_state(dataloader_generator: torch.Generator) -> dict:
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "dataloader_generator": dataloader_generator.get_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: dict, dataloader_generator: torch.Generator) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    dataloader_generator.set_state(state["dataloader_generator"])
+    if torch.cuda.is_available() and "cuda" in state:
+        torch.cuda.set_rng_state_all(state["cuda"])
 
 
 def _git_output(*args: str) -> str | None:
@@ -260,9 +310,11 @@ def build_optimizer(model: Detr3DModel, lr: float, backbone_lr_mult: float, weig
 
 def main() -> None:
     args = parse_args()
+    set_seed(args.seed, args.deterministic)
     device = torch.device(args.device)
-    if device.type == "cuda":
+    if device.type == "cuda" and not args.deterministic:
         torch.backends.cudnn.benchmark = True
+    if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +343,8 @@ def main() -> None:
     mlflow_run = _start_mlflow_run(args, len(dataset), output_dir)
     if mlflow_run is not None:
         mlflow_run.log_param("eval_dataset_size", len(eval_dataset))
+    dataloader_generator = torch.Generator()
+    dataloader_generator.manual_seed(args.seed)
     dataloader_kwargs = {
         "dataset": dataset,
         "batch_size": args.batch_size,
@@ -298,6 +352,8 @@ def main() -> None:
         "num_workers": args.num_workers,
         "collate_fn": detr3d_collate,
         "pin_memory": args.pin_memory or device.type == "cuda",
+        "generator": dataloader_generator,
+        "worker_init_fn": seed_worker,
     }
     if args.num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = args.prefetch_factor
@@ -351,6 +407,8 @@ def main() -> None:
         prior_history = resume_checkpoint.get("history", [])
         start_epoch = int(prior_history[-1]["epoch"]) if prior_history else 0
         best_eval_metric = float(resume_checkpoint.get("best_eval_metric", float("inf")))
+        if "rng_state" in resume_checkpoint:
+            restore_rng_state(resume_checkpoint["rng_state"], dataloader_generator)
 
     scheduler = None
     step_scheduler = None
@@ -387,6 +445,7 @@ def main() -> None:
             "history": history_payload,
             "args": vars(args),
             "best_eval_metric": best_eval_metric,
+            "rng_state": capture_rng_state(dataloader_generator),
         }
         if active_scheduler is not None:
             checkpoint["scheduler_state_dict"] = active_scheduler.state_dict()
