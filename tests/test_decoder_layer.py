@@ -34,6 +34,16 @@ class RecordingFFN(nn.Module):
         return torch.zeros_like(query)
 
 
+class FullResidualCrossAttention(nn.Module):
+    def forward(self, *, query, **kwargs):
+        return torch.full_like(query, 7.0)
+
+
+class ZeroFFN(nn.Module):
+    def forward(self, query):
+        return torch.zeros_like(query)
+
+
 def test_decoder_uses_official_operation_order():
     events = []
     layer = Detr3DDecoderLayer(
@@ -60,3 +70,30 @@ def test_decoder_uses_official_operation_order():
     )
 
     assert events == ["self", "cross", "ffn"]
+
+
+def test_decoder_does_not_add_second_cross_attention_residual():
+    layer = Detr3DDecoderLayer(
+        embed_dims=4,
+        num_heads=1,
+        num_cams=1,
+        num_levels=1,
+        dropout=0.0,
+    )
+    layer.self_attn = RecordingSelfAttention([])
+    layer.cross_attn = FullResidualCrossAttention()
+    layer.ffn = ZeroFFN()
+    layer.norm1 = nn.Identity()
+    layer.norm2 = nn.Identity()
+    layer.norm3 = nn.Identity()
+    layer.dropout = nn.Identity()
+
+    output = layer(
+        query=torch.ones(1, 1, 4),
+        query_pos=torch.zeros(1, 1, 4),
+        mlvl_feats=[],
+        reference_points=torch.full((1, 1, 3), 0.5),
+        img_metas=[],
+    )
+
+    torch.testing.assert_close(output, torch.full((1, 1, 4), 7.0))

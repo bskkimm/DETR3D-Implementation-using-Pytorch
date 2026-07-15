@@ -72,4 +72,4 @@ class Detr3DCrossAttention(nn.Module):
         fused = fused.permute(0, 2, 1)
         fused = self.output_proj(fused)
         pos_feat = self.position_encoder(inverse_sigmoid(reference_points))
-        return self.dropout(fused) + pos_feat
+        return self.dropout(fused) + query + pos_feat
