@@ -9,15 +9,27 @@ import torch.nn as nn
 class Detr3DModel(nn.Module):
     """Wires backbone, neck, transformer, and head into one module."""
 
-    def __init__(self, backbone: nn.Module, neck: nn.Module, transformer: nn.Module, head: nn.Module):
+    def __init__(
+        self,
+        backbone: nn.Module,
+        neck: nn.Module,
+        transformer: nn.Module,
+        head: nn.Module,
+        image_augmentation: nn.Module | None = None,
+    ):
         super().__init__()
         self.backbone = backbone
         self.neck = neck
         self.transformer = transformer
         self.head = head
+        self.image_augmentation = image_augmentation
 
     def forward(self, images: torch.Tensor, img_metas: Optional[List[Dict]] = None) -> Dict[str, torch.Tensor]:
         # `images`: [B, N_cam, 3, H, W]
+        if self.image_augmentation is not None:
+            batch, num_cams, channels, height, width = images.shape
+            flat_images = images.reshape(batch * num_cams, channels, height, width)
+            images = self.image_augmentation(flat_images).reshape_as(images)
         features = self.backbone(images)
         # Multi-scale per-camera pyramid, e.g. p3..p6 with shape [B, N_cam, C, H_l, W_l].
         pyramid = self.neck(features)

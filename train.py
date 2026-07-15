@@ -25,6 +25,7 @@ from detr3d.engine.trainer import fit
 from detr3d.models import Detr3DModel
 from detr3d.models.backbone import MultiViewImageBackbone
 from detr3d.models.checkpoint import load_fcos3d_initialization
+from detr3d.models.grid_mask import GridMask
 from detr3d.models.heads import Detr3DHead
 from detr3d.models.losses import Detr3DLoss
 from detr3d.models.neck import ImageFPN
@@ -64,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--official-image-backbone", action="store_true")
     parser.add_argument("--official-image-preprocessing", action="store_true")
     parser.add_argument("--init-fcos3d-checkpoint", type=str, default=None)
+    parser.add_argument("--grid-mask", action="store_true")
+    parser.add_argument("--photometric-distortion", action="store_true")
     parser.add_argument("--num-queries", type=int, default=900)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
@@ -291,6 +294,7 @@ def build_model(
     backbone_name: str,
     pretrained_backbone: bool,
     official_image_backbone: bool = False,
+    use_grid_mask: bool = False,
 ) -> Detr3DModel:
     return Detr3DModel(
         backbone=MultiViewImageBackbone(
@@ -301,6 +305,7 @@ def build_model(
         neck=ImageFPN(relu_before_extra_convs=official_image_backbone),
         transformer=Detr3DTransformer(num_queries=num_queries, num_levels=4),
         head=Detr3DHead(num_decoder_layers=6),
+        image_augmentation=GridMask() if use_grid_mask else None,
     )
 
 
@@ -345,6 +350,7 @@ def main() -> None:
         filter_gt_by_range=args.filter_gt_by_range,
         filter_zero_point_gt=args.filter_zero_point_gt,
         official_image_preprocessing=args.official_image_preprocessing,
+        photometric_distortion=args.photometric_distortion,
     )
     eval_dataset = dataset
     if args.val_split is not None:
@@ -384,6 +390,7 @@ def main() -> None:
         backbone_name=args.backbone,
         pretrained_backbone=not args.disable_pretrained_backbone,
         official_image_backbone=args.official_image_backbone,
+        use_grid_mask=args.grid_mask,
     ).to(device)
     if args.init_fcos3d_checkpoint is not None:
         initialization_report = load_fcos3d_initialization(model, args.init_fcos3d_checkpoint)
