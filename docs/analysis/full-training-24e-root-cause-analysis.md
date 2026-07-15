@@ -213,14 +213,14 @@ The current checkpoint must not be described as an official nuScenes-quality res
 
 | ID | Priority | Work item | Verification | Status |
 |---|---|---|---|---|
-| EVAL-1 | P0 | Add official-style flattened query-class decoding, post-center filtering, and nuScenes result export/evaluation | Produce per-class AP, mAP, NDS, and TP errors on val | Open |
-| EVAL-2 | P0 | Separate visualization threshold from regression diagnostics and remove the threshold fallback | Images contain only boxes at or above the requested threshold | Open |
-| LOSS-1 | P0 | Restore official focal settings, classification weight, and background normalization | One-sample regression passes; query score distribution shows stronger background suppression | Open |
-| MATCH-1 | P0 | Exclude velocity dimensions from Hungarian assignment cost | Unit test confirms assignment uses encoded dimensions 0:8 | Open |
-| ARCH-1 | P0 | Restore self-attention-before-cross-attention order | Unit test records the official operation sequence | Open |
-| ARCH-2 | P0 | Restore official cross-attention residual/dropout semantics | Unit test checks one residual and one visual-feature dropout path | Open |
-| ARCH-3 | P0 | Restore official Xavier and zero attention initialization | Parameter initialization tests pass | Open |
-| ARCH-4 | P1 | Change FFN width from 1024 to 512 | Model structure test confirms official dimensions | Open |
+| EVAL-1 | P0 | Add official-style flattened query-class decoding, post-center filtering, and nuScenes result export/evaluation | Produce per-class AP, mAP, NDS, and TP errors on val | Implemented; full val pending |
+| EVAL-2 | P0 | Separate visualization threshold from regression diagnostics and remove the threshold fallback | Images contain only boxes at or above the requested threshold | Complete |
+| LOSS-1 | P0 | Restore official focal settings, classification weight, and background normalization | One-sample regression passes; query score distribution shows stronger background suppression | Implemented; selected with MATCH-1 |
+| MATCH-1 | P0 | Exclude velocity dimensions from Hungarian assignment cost | Unit test confirms assignment uses encoded dimensions 0:8 | Implemented; provisional candidate |
+| ARCH-1 | P0 | Restore self-attention-before-cross-attention order | Unit test records the official operation sequence | Implemented; not selected by screening |
+| ARCH-2 | P0 | Restore official cross-attention residual/dropout semantics | Unit test checks one residual and one visual-feature dropout path | Implemented; regressed screening |
+| ARCH-3 | P0 | Restore official Xavier and zero attention initialization | Parameter initialization tests pass | Implemented; regressed screening |
+| ARCH-4 | P1 | Change FFN width from 1024 to 512 | Model structure test confirms official dimensions | Implemented; not selected by screening |
 | PRETRAIN-1 | P1 | Add compatible detector-level initialization or quantify the ImageNet-only gap | Controlled small-training comparison | Open |
 | AUG-1 | P1 | Add GridMask and multiview photometric distortion | Controlled small-training comparison | Open |
 
@@ -234,6 +234,31 @@ Every behavioral change should pass these gates before another full run:
 4. Official nuScenes evaluation on a fixed validation subset.
 5. Full validation only after the preceding gates improve or preserve the target metrics.
 
+### Recovery Screening Results
+
+All rows use the same deterministic 64-train-sample, 32-validation-sample,
+100-query, no-AMP setup. These nearest-center diagnostics select a candidate;
+they do not replace official nuScenes evaluation.
+
+| Commit | Cumulative change | Epoch 20 mean center | Epoch 20 median center | Epoch 20 class match |
+|---|---|---:|---:|---:|
+| `f157748` | Evaluation-only baseline | 3.7094 m | 2.9308 m | 429/1078 (39.80%) |
+| `3ab1ccd` | Official classification objective | 4.3262 m | 3.2621 m | 536/1078 (49.72%) |
+| `f110486` | Exclude velocity from matching | 3.7325 m | 2.9408 m | 508/1078 (47.12%) |
+| `40bd452` | Official decoder operation order | 4.1478 m | 2.9211 m | 445/1078 (41.28%) |
+| `faafd35` | Official cross-attention residual | 4.4561 m | 3.5016 m | 433/1078 (40.17%) |
+| `e432019` | Official transformer initialization | 4.8999 m | 3.8933 m | 455/1078 (42.21%) |
+| `ac0f26d` | Official FFN width, full parity stack | 4.3362 m | 3.4752 m | 532/1078 (49.35%) |
+
+At epoch 20, `f110486` is the provisional balanced candidate: it preserves
+baseline center distance within 0.0231 m while improving class matching by
+7.32 percentage points. Extending the no-scheduler runs to epoch 60 did not
+produce a stable winner: the baseline ended at 3.9961 m/25.05%, `f110486` at
+4.3759 m/22.45%, decoder-order at 4.3930 m/31.45%, and full parity at
+4.8478 m/66.88%. The rising classification and worsening localization show
+that this small-run recipe overfits and must not be used to justify full
+training without a scheduler-controlled confirmation.
+
 ## Decision Log
 
 | Date | Decision | Reason |
@@ -241,6 +266,8 @@ Every behavioral change should pass these gates before another full run:
 | 2026-07-15 | Do not promote the 24-epoch checkpoint as a stable baseline | Qualitative failures, non-official evaluation, and confirmed architecture/loss parity gaps |
 | 2026-07-15 | Preserve the checkpoint and reports as a diagnostic baseline | They are useful for measuring whether corrections improve score distribution and localization |
 | 2026-07-15 | Require official nuScenes metrics before another quality claim | Existing nearest-prediction diagnostics ignore false positives and many-to-one matching |
+| 2026-07-15 | Provisionally select `f110486` for the next controlled experiment | It gives the best epoch-20 geometry/classification balance; later architecture changes regress localization |
+| 2026-07-15 | Do not promote the cumulative full-parity stack yet | Its class matching rises to 66.88% by epoch 60 while mean center distance worsens to 4.8478 m |
 
 ## Updating This Document
 
