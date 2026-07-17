@@ -1,8 +1,16 @@
 # C6 CBGS Full Training
 
-Status: Prepared for launch
+Status: Running
 
 Branch: `exp/c6-cbgs-full-training`
+
+Launch commit: `72c419e`
+
+Started: 2026-07-17 22:05 JST
+
+tmux session: `detr3d-c6-full`
+
+Output: `outputs/c6_cbgs_full_v1`
 
 ## Decision
 
