@@ -10,35 +10,14 @@ from .loss_utils import encode_bbox_targets
 
 
 def _linear_sum_assignment(cost: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    try:
-        from scipy.optimize import linear_sum_assignment
+    from scipy.optimize import linear_sum_assignment
 
-        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
-        device = cost.device
-        return (
-            torch.as_tensor(row_ind, dtype=torch.long, device=device),
-            torch.as_tensor(col_ind, dtype=torch.long, device=device),
-        )
-    except Exception:
-        num_rows, num_cols = cost.shape
-        taken_rows = []
-        taken_cols = []
-        for _ in range(min(num_rows, num_cols)):
-            flat_idx = cost.argmin()
-            row = flat_idx // num_cols
-            col = flat_idx % num_cols
-            if row in taken_rows or col in taken_cols:
-                cost[row, col] = float("inf")
-                continue
-            taken_rows.append(int(row))
-            taken_cols.append(int(col))
-            cost[row] = float("inf")
-            cost[:, col] = float("inf")
-        device = cost.device
-        return (
-            torch.as_tensor(taken_rows, dtype=torch.long, device=device),
-            torch.as_tensor(taken_cols, dtype=torch.long, device=device),
-        )
+    row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
+    device = cost.device
+    return (
+        torch.as_tensor(row_ind, dtype=torch.long, device=device),
+        torch.as_tensor(col_ind, dtype=torch.long, device=device),
+    )
 
 
 def _box_l1_cost_matrix(pred_boxes: torch.Tensor, gt_boxes: torch.Tensor) -> torch.Tensor:

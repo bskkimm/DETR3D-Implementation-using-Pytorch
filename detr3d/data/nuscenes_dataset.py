@@ -39,6 +39,22 @@ NUSCENES_CLASSES = [
 
 CLASS_TO_ID = {name: idx for idx, name in enumerate(NUSCENES_CLASSES)}
 DEFAULT_POINT_CLOUD_RANGE = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0)
+OFFICIAL_CATEGORY_MAPPING = {
+    "movable_object.barrier": "barrier",
+    "vehicle.bicycle": "bicycle",
+    "vehicle.bus.bendy": "bus",
+    "vehicle.bus.rigid": "bus",
+    "vehicle.car": "car",
+    "vehicle.construction": "construction_vehicle",
+    "vehicle.motorcycle": "motorcycle",
+    "human.pedestrian.adult": "pedestrian",
+    "human.pedestrian.child": "pedestrian",
+    "human.pedestrian.construction_worker": "pedestrian",
+    "human.pedestrian.police_officer": "pedestrian",
+    "movable_object.trafficcone": "traffic_cone",
+    "vehicle.trailer": "trailer",
+    "vehicle.truck": "truck",
+}
 
 
 def load_table(meta_root: Path, name: str) -> List[dict]:
@@ -112,7 +128,11 @@ def resize_and_normalize_official_image(
     return torch.from_numpy(padded).permute(2, 0, 1)
 
 
-def category_to_detection_class(category_name: str) -> str | None:
+def category_to_detection_class(
+    category_name: str, *, official: bool = False
+) -> str | None:
+    if official:
+        return OFFICIAL_CATEGORY_MAPPING.get(category_name)
     if category_name.startswith("vehicle.car"):
         return "car"
     if category_name.startswith("vehicle.truck"):
@@ -206,6 +226,8 @@ class NuScenesTables:
 class NuScenesDetr3DDataset(Dataset):
     """Builds DETR3D-ready samples directly from extracted nuScenes files."""
 
+    CLASSES = tuple(NUSCENES_CLASSES)
+
     def __init__(
         self,
         dataroot: str | Path,
@@ -219,6 +241,7 @@ class NuScenesDetr3DDataset(Dataset):
         tables: NuScenesTables | None = None,
         official_image_preprocessing: bool = False,
         photometric_distortion: bool = False,
+        official_gt_semantics: bool = False,
     ):
         self.dataroot = Path(dataroot)
         self.version = version
@@ -228,6 +251,7 @@ class NuScenesDetr3DDataset(Dataset):
         self.point_cloud_range = point_cloud_range
         self.official_image_preprocessing = official_image_preprocessing
         self.photometric_distortion = photometric_distortion
+        self.official_gt_semantics = official_gt_semantics
         self.tables = tables or NuScenesTables.from_dataroot(self.dataroot, version)
         samples = self.tables.samples
         if split is not None:
@@ -324,26 +348,80 @@ class NuScenesDetr3DDataset(Dataset):
         velocity_lidar = global_to_lidar[:3, :3] @ velocity_global
         return center_lidar[:3], yaw_lidar, velocity_lidar[:2]
 
+    def _valid_annotation(
+        self, ann: dict, lidar_record: dict
+    ) -> tuple[str, np.ndarray, float, np.ndarray] | None:
+        instance = self.tables.instance_by_token[ann["instance_token"]]
+        category = self.tables.category_by_token[instance["category_token"]]["name"]
+        det_class = category_to_detection_class(
+            category, official=self.official_gt_semantics
+        )
+        if det_class is None:
+            return None
+
+        center_lidar, yaw, velocity_lidar = self._transform_global_ann_to_lidar(
+            ann, lidar_record
+        )
+        x, y, z = center_lidar.tolist()
+        point_count = ann.get("num_lidar_pts", 0) + ann.get("num_radar_pts", 0)
+        if self.official_gt_semantics:
+            x_min, y_min, _, x_max, y_max, _ = self.point_cloud_range
+            if not (x_min < x < x_max and y_min < y < y_max):
+                return None
+            if point_count <= 0:
+                return None
+        else:
+            if self.filter_gt_by_range:
+                x_min, y_min, z_min, x_max, y_max, z_max = self.point_cloud_range
+                if not (
+                    x_min <= x <= x_max
+                    and y_min <= y <= y_max
+                    and z_min <= z <= z_max
+                ):
+                    return None
+            if self.filter_zero_point_gt and point_count <= 0:
+                return None
+        return det_class, center_lidar, yaw, velocity_lidar
+
+    def get_cat_ids(self, index: int) -> list[int]:
+        """Return unique class IDs used to construct CBGS pools."""
+        sample_record = self.samples[index]
+        cat_ids = set()
+        for ann in self.tables.annotations_by_sample_token.get(sample_record["token"], []):
+            instance = self.tables.instance_by_token[ann["instance_token"]]
+            category = self.tables.category_by_token[instance["category_token"]]["name"]
+            det_class = category_to_detection_class(
+                category, official=self.official_gt_semantics
+            )
+            if det_class is None:
+                continue
+            if self.official_gt_semantics:
+                point_count = ann.get("num_lidar_pts", 0) + ann.get("num_radar_pts", 0)
+                if point_count <= 0:
+                    continue
+            cat_ids.add(CLASS_TO_ID[det_class])
+        return sorted(cat_ids)
+
+    def has_nonempty_gt(self, index: int) -> bool:
+        sample_record = self.samples[index]
+        lidar_record = self._get_lidar_record(sample_record)
+        return any(
+            self._valid_annotation(ann, lidar_record) is not None
+            for ann in self.tables.annotations_by_sample_token.get(sample_record["token"], [])
+        )
+
     def _build_gt_targets(self, sample_record: dict, lidar_record: dict) -> tuple[torch.Tensor, torch.Tensor]:
         boxes = []
         labels = []
         for ann in self.tables.annotations_by_sample_token.get(sample_record["token"], []):
-            instance = self.tables.instance_by_token[ann["instance_token"]]
-            category = self.tables.category_by_token[instance["category_token"]]["name"]
-            det_class = category_to_detection_class(category)
-            if det_class is None:
+            valid = self._valid_annotation(ann, lidar_record)
+            if valid is None:
                 continue
-            center_lidar, yaw, velocity_lidar = self._transform_global_ann_to_lidar(ann, lidar_record)
+            det_class, center_lidar, yaw, velocity_lidar = valid
             x, y, z = center_lidar.tolist()
-            if self.filter_gt_by_range:
-                x_min, y_min, z_min, x_max, y_max, z_max = self.point_cloud_range
-                if not (x_min <= x <= x_max and y_min <= y <= y_max and z_min <= z <= z_max):
-                    continue
-            if self.filter_zero_point_gt and ann.get("num_lidar_pts", 0) + ann.get("num_radar_pts", 0) <= 0:
-                continue
-            w, l, h = ann["size"]
+            width, length, height = ann["size"]
             vx, vy = velocity_lidar.tolist()
-            boxes.append([x, y, z, w, l, h, yaw, vx, vy])
+            boxes.append([x, y, z, width, length, height, yaw, vx, vy])
             labels.append(CLASS_TO_ID[det_class])
 
         if not boxes:
@@ -388,4 +466,11 @@ class NuScenesDetr3DDataset(Dataset):
         }
 
 
-__all__ = ["NuScenesDetr3DDataset", "NuScenesTables", "CAMERA_NAMES", "NUSCENES_CLASSES"]
+__all__ = [
+    "NuScenesDetr3DDataset",
+    "NuScenesTables",
+    "CAMERA_NAMES",
+    "NUSCENES_CLASSES",
+    "OFFICIAL_CATEGORY_MAPPING",
+    "category_to_detection_class",
+]

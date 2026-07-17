@@ -21,18 +21,31 @@ from detr3d.data import NuScenesDetr3DDataset, detr3d_collate
 from detr3d.engine.trainer import move_batch_to_device
 from detr3d.models import Detr3DModel
 from detr3d.models.backbone import MultiViewImageBackbone
+from detr3d.models.checkpoint import load_fcos3d_initialization
+from detr3d.models.grid_mask import GridMask
 from detr3d.models.heads import Detr3DHead
 from detr3d.models.losses import Detr3DLoss
 from detr3d.models.neck import ImageFPN
 from detr3d.models.transformer import Detr3DTransformer
 
 
-def build_benchmark_model(num_queries: int, backbone_name: str, pretrained_backbone: bool) -> Detr3DModel:
+def build_benchmark_model(
+    num_queries: int,
+    backbone_name: str,
+    pretrained_backbone: bool,
+    official_image_backbone: bool = False,
+    use_grid_mask: bool = False,
+) -> Detr3DModel:
     return Detr3DModel(
-        backbone=MultiViewImageBackbone(variant=backbone_name, pretrained=pretrained_backbone),
-        neck=ImageFPN(),
+        backbone=MultiViewImageBackbone(
+            variant=backbone_name,
+            pretrained=pretrained_backbone,
+            official_style=official_image_backbone,
+        ),
+        neck=ImageFPN(relu_before_extra_convs=official_image_backbone),
         transformer=Detr3DTransformer(num_queries=num_queries, num_levels=4),
         head=Detr3DHead(num_decoder_layers=6),
+        image_augmentation=GridMask() if use_grid_mask else None,
     )
 
 
@@ -75,6 +88,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-width", type=int, default=1472)
     parser.add_argument("--backbone", type=str, default="resnet101")
     parser.add_argument("--disable-pretrained-backbone", action="store_true")
+    parser.add_argument("--official-image-backbone", action="store_true")
+    parser.add_argument("--official-image-preprocessing", action="store_true")
+    parser.add_argument("--init-fcos3d-checkpoint", type=str, default=None)
+    parser.add_argument("--grid-mask", action="store_true")
+    parser.add_argument("--photometric-distortion", action="store_true")
+    parser.add_argument("--official-gt-semantics", action="store_true")
     parser.add_argument("--num-queries", type=int, default=100)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--backbone-lr-mult", type=float, default=0.1)
@@ -132,6 +151,10 @@ def main() -> None:
         version=args.version,
         image_size=(args.image_height, args.image_width),
         max_samples=args.max_samples,
+        split="train",
+        official_image_preprocessing=args.official_image_preprocessing,
+        photometric_distortion=args.photometric_distortion,
+        official_gt_semantics=args.official_gt_semantics,
     )
     dataloader_kwargs = {
         "dataset": dataset,
@@ -156,7 +179,11 @@ def main() -> None:
             num_queries=args.num_queries,
             backbone_name=args.backbone,
             pretrained_backbone=not args.disable_pretrained_backbone,
+            official_image_backbone=args.official_image_backbone,
+            use_grid_mask=args.grid_mask,
         ).to(device)
+        if args.init_fcos3d_checkpoint is not None:
+            load_fcos3d_initialization(model, args.init_fcos3d_checkpoint)
         criterion = Detr3DLoss(
             num_classes=10,
             loss_cls_weight=args.loss_cls_weight,

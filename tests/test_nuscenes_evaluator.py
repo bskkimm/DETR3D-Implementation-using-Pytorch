@@ -168,6 +168,23 @@ def test_class_range_uses_ego_center():
     assert cone == []
 
 
+def test_lidar_conversion_uses_supplied_checkpoint_class_order():
+    class_names = ["traffic_cone", "car"]
+    records = lidar_predictions_to_nuscenes(
+        sample_token="sample",
+        boxes_lidar=torch.tensor(
+            [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]]
+        ),
+        scores=torch.tensor([0.5]),
+        labels=torch.tensor([0]),
+        tables=_tables(),
+        class_range={"traffic_cone": 30.0},
+        class_names=class_names,
+    )
+
+    assert records[0]["detection_name"] == "traffic_cone"
+
+
 def test_submission_schema_loads_with_devkit(tmp_path):
     import json
 

@@ -40,10 +40,11 @@ Official config values:
 MMCV cumulative iterations or any other gradient-accumulation mechanism.
 Every distributed iteration therefore performs an optimizer update.
 
-For a single-GPU reproduction, matching an assumed eight-GPU global batch
-requires an equivalent local configuration such as physical batch 2 with four
-accumulation steps. This repository currently has no gradient-accumulation
-option, so its tested physical batch 2 gives effective global batch 2, not 8.
+For a single-GPU reproduction, matching the paper's eight-GPU global batch
+requires an equivalent local configuration such as physical batch 4 with two
+accumulation steps. The full-training branch implements this option and steps
+the optimizer, gradient clipping, and LR scheduler only after each complete
+accumulation window.
 
 ## Paper And Released-Config Recipes
 
@@ -208,6 +209,13 @@ C6 screening and confirmation are not full official training reproductions:
 - Candidate selection uses nearest-center diagnostics rather than official
   nuScenes mAP and NDS.
 - C6 does not use the optional CBGS dataset wrapper.
+
+The full-training branch adds opt-in official GT semantics, deterministic
+CBGS, and gradient accumulation. Its selected physical batch 4 and two
+accumulation steps give effective batch 8 on one GPU. Accumulated microbatches
+still normalize their DETR losses independently before gradient averaging, so
+this is a close effective-batch reproduction rather than bit-identical DDP
+optimization.
 
 A full C6 reproduction decision must therefore state whether it targets the
 base official model or the higher-scoring CBGS variant, and whether it targets

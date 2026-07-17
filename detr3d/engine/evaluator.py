@@ -184,6 +184,7 @@ def export_nuscenes_results(
     max_num: int = OFFICIAL_MAX_NUM,
     post_center_range: Sequence[float] = OFFICIAL_POST_CENTER_RANGE,
     eval_config_name: str = "detection_cvpr_2019",
+    class_names: Sequence[str] = NUSCENES_CLASSES,
     verbose: bool = True,
 ) -> Path:
     from nuscenes.eval.detection.config import config_factory
@@ -217,6 +218,7 @@ def export_nuscenes_results(
                 labels=labels,
                 tables=dataset.tables,
                 class_range=config.class_range,
+                class_names=class_names,
             )
             if verbose and (index + 1) % 100 == 0:
                 print(f"exported {index + 1}/{len(dataset)} samples")

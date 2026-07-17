@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 outputs/
+checkpoints/
 **/__pycache__/
 mlflow.db
 mlflow.db-*

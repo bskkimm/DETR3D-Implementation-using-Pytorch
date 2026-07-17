@@ -15,7 +15,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from detr3d.data import NuScenesDetr3DDataset, detr3d_collate
+from detr3d.data import CBGSDataset, NuScenesDetr3DDataset, detr3d_collate
+from detr3d.data.nuscenes_dataset import NUSCENES_CLASSES
 from detr3d.engine.diagnostics import (
     evaluate_samples,
     parse_sample_indices,
@@ -38,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", type=str, default="v1.0-trainval")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--accumulation-steps", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--pin-memory", action="store_true")
@@ -67,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--init-fcos3d-checkpoint", type=str, default=None)
     parser.add_argument("--grid-mask", action="store_true")
     parser.add_argument("--photometric-distortion", action="store_true")
+    parser.add_argument("--cbgs", action="store_true")
+    parser.add_argument("--official-gt-semantics", action="store_true")
     parser.add_argument("--num-queries", type=int, default=900)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--dataset-split", type=str, default=None, choices=["train", "val", "mini_train", "mini_val"])
@@ -328,6 +332,10 @@ def build_optimizer(model: Detr3DModel, lr: float, backbone_lr_mult: float, weig
 
 def main() -> None:
     args = parse_args()
+    if args.accumulation_steps < 1:
+        raise ValueError("--accumulation-steps must be a positive integer")
+    if args.cbgs and not args.official_gt_semantics:
+        raise ValueError("--cbgs requires --official-gt-semantics")
     set_seed(args.seed, args.deterministic)
     device = torch.device(args.device)
     if device.type == "cuda" and not args.deterministic:
@@ -351,6 +359,7 @@ def main() -> None:
         filter_zero_point_gt=args.filter_zero_point_gt,
         official_image_preprocessing=args.official_image_preprocessing,
         photometric_distortion=args.photometric_distortion,
+        official_gt_semantics=args.official_gt_semantics,
     )
     eval_dataset = dataset
     if args.val_split is not None:
@@ -364,6 +373,7 @@ def main() -> None:
             filter_zero_point_gt=args.filter_zero_point_gt,
             tables=dataset.tables,
             official_image_preprocessing=args.official_image_preprocessing,
+            official_gt_semantics=args.official_gt_semantics,
         )
     elif args.photometric_distortion and (args.eval_sample_indices or args.num_eval_samples > 0):
         eval_dataset = NuScenesDetr3DDataset(
@@ -377,10 +387,28 @@ def main() -> None:
             tables=dataset.tables,
             official_image_preprocessing=args.official_image_preprocessing,
             photometric_distortion=False,
+            official_gt_semantics=args.official_gt_semantics,
+        )
+    base_train_size = len(dataset)
+    if args.cbgs:
+        dataset = CBGSDataset(dataset, seed=args.seed)
+        cbgs_report_path = output_dir / "cbgs_report.json"
+        cbgs_report_path.write_text(
+            json.dumps(
+                {
+                    "fingerprint": dataset.fingerprint,
+                    "stats": dataset.stats,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
     mlflow_run = _start_mlflow_run(args, len(dataset), output_dir)
     if mlflow_run is not None:
+        mlflow_run.log_param("base_train_dataset_size", base_train_size)
         mlflow_run.log_param("eval_dataset_size", len(eval_dataset))
+        if args.cbgs:
+            _log_mlflow_artifact(mlflow_run, cbgs_report_path)
     dataloader_generator = torch.Generator()
     dataloader_generator.manual_seed(args.seed)
     dataloader_kwargs = {
@@ -449,6 +477,14 @@ def main() -> None:
     resume_checkpoint = None
     if args.resume is not None:
         resume_checkpoint = torch.load(args.resume, map_location=device)
+        saved_args = resume_checkpoint.get("args", {})
+        for name in ("accumulation_steps", "batch_size", "cbgs"):
+            saved_value = saved_args.get(name, 1 if name == "accumulation_steps" else False)
+            if saved_value != getattr(args, name):
+                raise ValueError(
+                    f"Cannot resume with changed {name}: checkpoint={saved_value}, "
+                    f"requested={getattr(args, name)}"
+                )
         model.load_state_dict(resume_checkpoint["model_state_dict"])
         if "optimizer_state_dict" in resume_checkpoint:
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
@@ -468,7 +504,8 @@ def main() -> None:
         )
     elif args.scheduler == "cosine":
         schedule_epochs = args.scheduler_total_epochs or (start_epoch + args.epochs)
-        total_steps = schedule_epochs * len(dataloader)
+        optimizer_steps_per_epoch = math.ceil(len(dataloader) / args.accumulation_steps)
+        total_steps = schedule_epochs * optimizer_steps_per_epoch
 
         def lr_factor(step: int) -> float:
             if args.warmup_steps > 0 and step < args.warmup_steps:
@@ -492,6 +529,12 @@ def main() -> None:
             "optimizer_state_dict": optimizer.state_dict(),
             "history": history_payload,
             "args": vars(args),
+            "class_names": list(NUSCENES_CLASSES),
+            "training_state": {
+                "completed_epoch": int(history_payload[-1]["epoch"]) if history_payload else 0,
+                "accumulation_steps": args.accumulation_steps,
+                "resume_safe": True,
+            },
             "best_eval_metric": best_eval_metric,
             "rng_state": capture_rng_state(dataloader_generator),
         }
@@ -559,6 +602,7 @@ def main() -> None:
             epoch_end_callback=on_epoch_end,
             safety_check=thermal_monitor,
             step_scheduler=step_scheduler,
+            accumulation_steps=args.accumulation_steps,
         )
     except Exception:
         save_checkpoint("emergency_checkpoint.pt", prior_history + current_history)
