@@ -1,0 +1,65 @@
+{
+  "matrix_id": "paired-config-confirmation-v1",
+  "aggregate_phase": "confirmation",
+  "dataset": {
+    "dataroot": "/home/beomseokkim2/dataset/nuscenes",
+    "version": "v1.0-trainval",
+    "train_samples": 1024,
+    "val_samples": 512,
+    "train_token_sha256": "212ebc7c0348b13d40af4ca9adb33a912c7155e5a65d2d4a93899c9a8aad0c71",
+    "val_token_sha256": "14cf2bb502682c7f3a0ac2269605aca5a06d83e7456cf7f563f9b546e2388862"
+  },
+  "seeds": [0, 1, 2],
+  "protocol": {
+    "epochs": 60,
+    "eval_epochs": [20, 40, 60],
+    "image_height": 900,
+    "image_width": 1600,
+    "num_queries": 900,
+    "batch_size": 2,
+    "num_workers": 2,
+    "scheduler": "cosine",
+    "warmup_steps": 17,
+    "min_lr_ratio": 0.001,
+    "lr": 0.0002,
+    "backbone_lr_mult": 0.1,
+    "weight_decay": 0.01,
+    "grad_clip_norm": 35.0
+  },
+  "promotion_gate": {
+    "minimum_center_improvement_fraction": 0.03,
+    "minimum_class_match_improvement_points": 3.0,
+    "minimum_seed_wins": 2,
+    "require_multiple_checkpoint_wins": true
+  },
+  "variants": {
+    "B0": {
+      "commit": "c360062",
+      "description": "Previous model, loss, matcher, and transformer configuration"
+    },
+    "C5": {
+      "commit": "77b6469",
+      "description": "Official parity stack with FCOS3D backbone/FPN initialization",
+      "extra_args": [
+        "--official-image-backbone",
+        "--official-image-preprocessing",
+        "--disable-pretrained-backbone",
+        "--init-fcos3d-checkpoint",
+        "/tmp/opencode/detr3d_checkpoints/fcos3d.pth"
+      ]
+    },
+    "C6": {
+      "commit": "e5d263b",
+      "description": "C5 plus GridMask and multiview photometric distortion",
+      "extra_args": [
+        "--official-image-backbone",
+        "--official-image-preprocessing",
+        "--disable-pretrained-backbone",
+        "--init-fcos3d-checkpoint",
+        "/tmp/opencode/detr3d_checkpoints/fcos3d.pth",
+        "--grid-mask",
+        "--photometric-distortion"
+      ]
+    }
+  }
+}

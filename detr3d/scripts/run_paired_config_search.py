@@ -16,7 +16,9 @@ DEFAULT_MANIFEST = REPO_ROOT / "detr3d/experiments/paired_config_search_v1.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--phase", choices=["one-sample", "small", "aggregate"], required=True)
+    parser.add_argument(
+        "--phase", choices=["one-sample", "small", "confirmation", "aggregate"], required=True
+    )
     parser.add_argument("--variant", default="all")
     parser.add_argument("--seed", default="all")
     parser.add_argument("--worktree-root", type=Path, default=Path("/tmp/opencode/detr3d_matrix_worktrees"))
@@ -67,6 +69,7 @@ def ensure_worktree(variant: str, commit: str, root: Path) -> Path:
 def base_command(manifest: dict, output_dir: Path, seed: int, phase: str) -> list[str]:
     dataset = manifest["dataset"]
     protocol = manifest["protocol"]
+    is_quality_phase = phase in {"small", "confirmation"}
     if phase == "one-sample":
         train_samples = 1
         epochs = 60
@@ -90,7 +93,7 @@ def base_command(manifest: dict, output_dir: Path, seed: int, phase: str) -> lis
         "--max-samples",
         str(train_samples),
         "--batch-size",
-        str(protocol["batch_size"] if phase == "small" else 1),
+        str(protocol["batch_size"] if is_quality_phase else 1),
         "--epochs",
         str(epochs),
         "--num-workers",
@@ -118,7 +121,7 @@ def base_command(manifest: dict, output_dir: Path, seed: int, phase: str) -> lis
         "--scheduler-total-epochs",
         str(epochs),
         "--warmup-steps",
-        str(protocol["warmup_steps"] if phase == "small" else 0),
+        str(protocol["warmup_steps"] if is_quality_phase else 0),
         "--min-lr-ratio",
         str(protocol["min_lr_ratio"]),
         "--grad-clip-norm",
@@ -126,7 +129,7 @@ def base_command(manifest: dict, output_dir: Path, seed: int, phase: str) -> lis
         "--output-dir",
         str(output_dir),
         "--num-eval-samples",
-        str(dataset["val_samples"] if phase == "small" else 1),
+        str(dataset["val_samples"] if is_quality_phase else 1),
         "--eval-every",
         str(eval_every),
         "--eval-score-threshold",
@@ -148,7 +151,7 @@ def base_command(manifest: dict, output_dir: Path, seed: int, phase: str) -> lis
         "--resume-cpu-temp",
         "80",
     ]
-    if phase == "small":
+    if is_quality_phase:
         command.extend(
             [
                 "--val-split",
@@ -204,7 +207,7 @@ def run_matrix(args: argparse.Namespace, manifest: dict) -> None:
                 raise
             status["status"] = "completed"
             status["finished_at"] = datetime.now(timezone.utc).isoformat()
-            if args.phase == "small":
+            if args.phase in {"small", "confirmation"}:
                 removed = []
                 for checkpoint_path in run_dir.glob("*.pt"):
                     removed.append(checkpoint_path.name)
@@ -215,7 +218,7 @@ def run_matrix(args: argparse.Namespace, manifest: dict) -> None:
 
 def aggregate(args: argparse.Namespace, manifest: dict) -> None:
     rows = []
-    phase = "small"
+    phase = manifest.get("aggregate_phase", "small")
     for variant, definition in manifest["variants"].items():
         for seed in manifest["seeds"]:
             run_dir = args.output_root / phase / variant / f"seed_{seed}"
