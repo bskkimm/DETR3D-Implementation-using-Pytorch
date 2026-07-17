@@ -1,8 +1,18 @@
 # C6 Full Training
 
-Status: Prepared for launch
+Status: Running
 
 Branch: `exp/c6-full-training`
+
+Launch commit: `fa22a56`
+
+Started: 2026-07-17 23:24 JST
+
+tmux session: `detr3d-c6-full`
+
+MLflow run: `da5c0f1ff86b4705aa600c2c3794c0ba`
+
+Output: `outputs/c6_full_v1`
 
 ## Decision
 
