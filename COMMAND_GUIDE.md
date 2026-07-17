@@ -1,8 +1,10 @@
 # DETR3D Command Guide
 
 The active full-training command is documented in
-`docs/analysis/c6-cbgs-full-training.md`. That note is authoritative for the
-C6-CBGS effective-batch-8 run, checkpoint recovery, and official validation.
+`docs/analysis/c6-full-training.md`. That note is authoritative for the base
+C6 effective-batch-8 run, checkpoint recovery, periodic validation, and
+official final evaluation. The cancelled CBGS setup remains recorded in
+`docs/analysis/c6-cbgs-full-training.md`.
 
 This guide includes two tracks:
 - the current canonical regression baseline used for reproduction on `exp/official-copy`

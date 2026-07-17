@@ -455,8 +455,12 @@ def evaluate_samples(
     *,
     overlay_dir: Path | None = None,
     bev_dir: Path | None = None,
+    artifact_sample_indices: Iterable[int] | None = None,
     verbose: bool = True,
 ) -> dict:
+    artifact_indices = (
+        None if artifact_sample_indices is None else set(artifact_sample_indices)
+    )
     sample_summaries = []
     for sample_index in sample_indices:
         sample = dataset[sample_index]
@@ -475,7 +479,8 @@ def evaluate_samples(
 
         token = sample["img_metas"]["sample_token"]
         original_image_shapes = get_original_camera_shapes(dataset, sample_index, token)
-        if overlay_dir is not None:
+        save_artifacts = artifact_indices is None or sample_index in artifact_indices
+        if overlay_dir is not None and save_artifacts:
             save_overlay_figure(
                 sample,
                 pred_boxes,
@@ -484,7 +489,7 @@ def evaluate_samples(
                 overlay_dir / f"{sample_index:04d}_{token}_overlay.png",
                 original_image_shapes=original_image_shapes,
             )
-        if bev_dir is not None:
+        if bev_dir is not None and save_artifacts:
             save_bev_figure(sample["gt_boxes_ego"].cpu(), pred_boxes, pred_scores, bev_dir / f"{sample_index:04d}_{token}_bev.png")
 
     valid_dists = [row["mean_center_distance"] for row in sample_summaries if row["mean_center_distance"] is not None]

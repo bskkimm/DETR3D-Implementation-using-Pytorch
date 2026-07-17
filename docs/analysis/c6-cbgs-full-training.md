@@ -1,6 +1,6 @@
 # C6 CBGS Full Training
 
-Status: Running
+Status: Cancelled before epoch 1
 
 Branch: `exp/c6-cbgs-full-training`
 
@@ -11,6 +11,12 @@ Started: 2026-07-17 22:05 JST
 tmux session: `detr3d-c6-full`
 
 Output: `outputs/c6_cbgs_full_v1`
+
+MLflow run: `0f1fbe7f134143bbaa6a8565b19720a8`
+
+The run was stopped after selecting base C6 without CBGS to reduce expected
+single-GPU runtime from approximately 12 days to approximately 3 days. No
+epoch checkpoint was produced.
 
 ## Decision
 

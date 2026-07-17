@@ -86,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-score-threshold", type=float, default=0.005)
     parser.add_argument("--eval-max-boxes", type=int, default=50)
     parser.add_argument("--disable-eval-artifacts", action="store_true")
+    parser.add_argument("--num-eval-artifact-samples", type=int, default=None)
     parser.add_argument("--disable-auxiliary-losses", action="store_true")
     parser.add_argument("--use-amp", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
@@ -460,6 +461,13 @@ def main() -> None:
         len(eval_dataset),
         limit=args.num_eval_samples if args.num_eval_samples > 0 else None,
     ) if (args.eval_sample_indices or args.num_eval_samples > 0) else []
+    if args.num_eval_artifact_samples is not None and args.num_eval_artifact_samples < 0:
+        raise ValueError("--num-eval-artifact-samples must be non-negative")
+    eval_artifact_sample_indices = (
+        eval_sample_indices
+        if args.num_eval_artifact_samples is None
+        else eval_sample_indices[: args.num_eval_artifact_samples]
+    )
     thermal_monitor = ThermalSafetyMonitor(
         interval=args.thermal_check_interval,
         max_gpu_temp=args.max_gpu_temp,
@@ -567,6 +575,7 @@ def main() -> None:
                 max_boxes=args.eval_max_boxes,
                 overlay_dir=overlays_dir,
                 bev_dir=bev_dir,
+                artifact_sample_indices=eval_artifact_sample_indices,
                 verbose=False,
             )
             eval_summary_path = eval_dir / f"epoch_{epoch_idx:04d}.json"
@@ -626,6 +635,7 @@ def main() -> None:
             max_boxes=args.eval_max_boxes,
             overlay_dir=final_overlays_dir,
             bev_dir=final_bev_dir,
+            artifact_sample_indices=eval_artifact_sample_indices,
             verbose=False,
         )
         final_eval_path = output_dir / "final_eval.json"
