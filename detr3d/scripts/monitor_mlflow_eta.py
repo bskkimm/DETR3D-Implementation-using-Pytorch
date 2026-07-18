@@ -72,6 +72,15 @@ def estimate_progress(
             "expected_finish_unix_seconds": expected_finish,
         }
     )
+    if completed_epochs >= total_epochs:
+        result["current_epoch"] = float(total_epochs)
+        result["current_epoch_progress_percent"] = 100.0
+    elif mean_epoch_seconds > 0:
+        result["current_epoch"] = float(completed_epochs + 1)
+        result["current_epoch_progress_percent"] = min(
+            100.0 * max(now - last_completion, 0.0) / mean_epoch_seconds,
+            99.9,
+        )
     return result
 
 
@@ -104,6 +113,7 @@ def overview_note(
     if "estimated_total_hours" in estimate:
         lines.extend(
             [
+                f"- **Average epoch:** {format_duration(estimate['mean_epoch_hours'])}",
                 f"- **Estimated total:** {format_duration(estimate['estimated_total_hours'])}",
                 f"- **Remaining:** {format_duration(estimate['eta_hours'])}",
             ]
@@ -112,6 +122,11 @@ def overview_note(
         f"- **Progress:** {completed_epochs} / {total_epochs} epochs "
         f"({estimate['progress_percent']:.1f}%)"
     )
+    if "current_epoch_progress_percent" in estimate:
+        lines.append(
+            f"- **Current epoch {int(estimate['current_epoch'])}:** "
+            f"{estimate['current_epoch_progress_percent']:.1f}% estimated"
+        )
     if expected_finish_local is not None:
         lines.append(f"- **Expected finish:** {expected_finish_local}")
     lines.extend(["", f"Last updated: {updated_at_local}"])
