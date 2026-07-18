@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-epochs", type=int, required=True)
     parser.add_argument("--tracking-uri", default="sqlite:///mlflow.db")
     parser.add_argument("--poll-interval", type=float, default=60.0)
+    parser.add_argument("--overview-interval", type=float, default=300.0)
     parser.add_argument("--timezone", default="Asia/Tokyo")
     parser.add_argument("--training-pid", type=int, default=None)
     parser.add_argument("--once", action="store_true")
@@ -53,6 +54,7 @@ def estimate_progress(
     result = {
         "completed_epochs": float(completed_epochs),
         "progress_percent": 100.0 * completed_epochs / total_epochs,
+        "elapsed_hours": max(now - start_time, 0.0) / 3600.0,
     }
     if completed_epochs == 0:
         return result
@@ -65,11 +67,55 @@ def estimate_progress(
     result.update(
         {
             "mean_epoch_hours": mean_epoch_seconds / 3600.0,
+            "estimated_total_hours": mean_epoch_seconds * total_epochs / 3600.0,
             "eta_hours": max(expected_finish - now, 0.0) / 3600.0,
             "expected_finish_unix_seconds": expected_finish,
         }
     )
     return result
+
+
+def format_duration(hours: float) -> str:
+    total_minutes = max(int(round(hours * 60)), 0)
+    days, remaining_minutes = divmod(total_minutes, 24 * 60)
+    duration_hours, minutes = divmod(remaining_minutes, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if duration_hours or days:
+        parts.append(f"{duration_hours}h")
+    parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def overview_note(
+    *,
+    estimate: dict[str, float],
+    total_epochs: int,
+    expected_finish_local: str | None,
+    updated_at_local: str,
+) -> str:
+    completed_epochs = int(estimate["completed_epochs"])
+    lines = [
+        "## Training Progress",
+        "",
+        f"- **Elapsed:** {format_duration(estimate['elapsed_hours'])}",
+    ]
+    if "estimated_total_hours" in estimate:
+        lines.extend(
+            [
+                f"- **Estimated total:** {format_duration(estimate['estimated_total_hours'])}",
+                f"- **Remaining:** {format_duration(estimate['eta_hours'])}",
+            ]
+        )
+    lines.append(
+        f"- **Progress:** {completed_epochs} / {total_epochs} epochs "
+        f"({estimate['progress_percent']:.1f}%)"
+    )
+    if expected_finish_local is not None:
+        lines.append(f"- **Expected finish:** {expected_finish_local}")
+    lines.extend(["", f"Last updated: {updated_at_local}"])
+    return "\n".join(lines)
 
 
 def process_is_alive(pid: int | None) -> bool:
@@ -91,6 +137,8 @@ def log_progress(
     output_dir: Path,
     total_epochs: int,
     timezone_name: str,
+    log_epoch_metrics: bool = True,
+    update_overview: bool = True,
 ) -> int:
     run = client.get_run(run_id)
     start_time = run.info.start_time / 1000.0
@@ -107,32 +155,48 @@ def log_progress(
     metric_names = {
         "completed_epochs": "training_completed_epochs",
         "progress_percent": "training_progress_percent",
+        "elapsed_hours": "training_elapsed_hours",
         "mean_epoch_hours": "training_mean_epoch_hours",
+        "estimated_total_hours": "training_estimated_total_hours",
         "eta_hours": "training_eta_hours",
         "expected_finish_unix_seconds": "training_expected_finish_unix_seconds",
     }
-    for source_name, metric_name in metric_names.items():
-        if source_name in estimate:
-            client.log_metric(
-                run_id,
-                metric_name,
-                estimate[source_name],
-                timestamp=timestamp_ms,
-                step=completed_epochs,
-            )
+    if log_epoch_metrics:
+        for source_name, metric_name in metric_names.items():
+            if source_name in estimate:
+                client.log_metric(
+                    run_id,
+                    metric_name,
+                    estimate[source_name],
+                    timestamp=timestamp_ms,
+                    step=completed_epochs,
+                )
 
     local_zone = ZoneInfo(timezone_name)
     updated_at = datetime.fromtimestamp(now, timezone.utc).astimezone(local_zone)
-    client.set_tag(run_id, "eta_monitor_updated_at", updated_at.isoformat())
-    client.set_tag(run_id, "eta_monitor_timezone", timezone_name)
+    expected_finish_local = None
     if "expected_finish_unix_seconds" in estimate:
         expected_finish = datetime.fromtimestamp(
             estimate["expected_finish_unix_seconds"], timezone.utc
         ).astimezone(local_zone)
+        expected_finish_local = expected_finish.strftime("%Y-%m-%d %H:%M:%S %Z")
+    if update_overview:
+        updated_at_local = updated_at.strftime("%Y-%m-%d %H:%M:%S %Z")
+        client.set_tag(run_id, "eta_monitor_updated_at", updated_at.isoformat())
+        client.set_tag(run_id, "eta_monitor_timezone", timezone_name)
+        if expected_finish_local is not None:
+            client.set_tag(
+                run_id, "training_expected_finish_local", expected_finish_local
+            )
         client.set_tag(
             run_id,
-            "training_expected_finish_local",
-            expected_finish.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "mlflow.note.content",
+            overview_note(
+                estimate=estimate,
+                total_epochs=total_epochs,
+                expected_finish_local=expected_finish_local,
+                updated_at_local=updated_at_local,
+            ),
         )
     return completed_epochs
 
@@ -140,20 +204,34 @@ def log_progress(
 def main() -> None:
     args = parse_args()
     client = MlflowClient(tracking_uri=args.tracking_uri)
+    last_completed_epochs = -1
+    last_overview_update = 0.0
     while True:
+        now = time.monotonic()
+        completion_times = completed_eval_times(args.output_dir)
+        observed_completed_epochs = completion_times[-1][0] if completion_times else 0
+        epoch_changed = observed_completed_epochs != last_completed_epochs
+        overview_due = now - last_overview_update >= args.overview_interval
         completed_epochs = log_progress(
             client=client,
             run_id=args.run_id,
             output_dir=args.output_dir,
             total_epochs=args.total_epochs,
             timezone_name=args.timezone,
+            log_epoch_metrics=epoch_changed,
+            update_overview=epoch_changed or overview_due,
         )
+        if epoch_changed:
+            last_completed_epochs = completed_epochs
+        if epoch_changed or overview_due:
+            last_overview_update = now
         if completed_epochs >= args.total_epochs or args.once:
             return
         if not process_is_alive(args.training_pid):
             client.set_tag(args.run_id, "eta_monitor_status", "training_process_stopped")
             return
-        client.set_tag(args.run_id, "eta_monitor_status", "running")
+        if epoch_changed or overview_due:
+            client.set_tag(args.run_id, "eta_monitor_status", "running")
         time.sleep(args.poll_interval)
 
 

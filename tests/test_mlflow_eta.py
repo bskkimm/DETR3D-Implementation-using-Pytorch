@@ -5,6 +5,8 @@ import pytest
 from detr3d.scripts.monitor_mlflow_eta import (
     completed_eval_times,
     estimate_progress,
+    format_duration,
+    overview_note,
 )
 
 
@@ -25,7 +27,9 @@ def test_estimate_progress_uses_completed_epoch_cycle_time():
 
     assert result["completed_epochs"] == 3
     assert result["progress_percent"] == 50
+    assert result["elapsed_hours"] == pytest.approx(35_000 / 3600)
     assert result["mean_epoch_hours"] == pytest.approx(10_000 / 3600)
+    assert result["estimated_total_hours"] == pytest.approx(60_000 / 3600)
     assert result["eta_hours"] == pytest.approx(25_000 / 3600)
     assert result["expected_finish_unix_seconds"] == start + 60_000
 
@@ -52,3 +56,32 @@ def test_estimate_progress_rejects_invalid_total_epochs():
             total_epochs=0,
             now=0,
         )
+
+
+def test_overview_note_formats_progress_for_mlflow_description():
+    note = overview_note(
+        estimate={
+            "completed_epochs": 4.0,
+            "progress_percent": 100 / 6,
+            "elapsed_hours": 13.5,
+            "estimated_total_hours": 66.6,
+            "eta_hours": 53.1,
+        },
+        total_epochs=24,
+        expected_finish_local="2026-07-20 18:02:25 JST",
+        updated_at_local="2026-07-18 13:10:00 JST",
+    )
+
+    assert "**Elapsed:** 13h 30m" in note
+    assert "**Estimated total:** 2d 18h 36m" in note
+    assert "**Remaining:** 2d 5h 6m" in note
+    assert "4 / 24 epochs (16.7%)" in note
+    assert "2026-07-20 18:02:25 JST" in note
+
+
+@pytest.mark.parametrize(
+    ("hours", "expected"),
+    [(0.0, "0m"), (1.5, "1h 30m"), (25.25, "1d 1h 15m")],
+)
+def test_format_duration(hours, expected):
+    assert format_duration(hours) == expected
