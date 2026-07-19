@@ -72,6 +72,21 @@ def test_estimate_progress_marks_final_epoch_complete():
     assert result["current_epoch_progress_percent"] == 100
 
 
+def test_estimate_progress_anchors_incomplete_epoch_at_resume_time():
+    result = estimate_progress(
+        start_time=0,
+        completion_times=[(1, 100), (2, 200)],
+        total_epochs=4,
+        now=1010,
+        current_epoch_start_time=1000,
+    )
+
+    assert result["current_epoch"] == 3
+    assert result["current_epoch_progress_percent"] == pytest.approx(10)
+    assert result["eta_hours"] == pytest.approx(190 / 3600)
+    assert result["expected_finish_unix_seconds"] == 1200
+
+
 def test_overview_note_formats_progress_for_mlflow_description():
     note = overview_note(
         estimate={

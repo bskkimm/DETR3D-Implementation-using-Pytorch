@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overview-interval", type=float, default=300.0)
     parser.add_argument("--timezone", default="Asia/Tokyo")
     parser.add_argument("--training-pid", type=int, default=None)
+    parser.add_argument("--current-epoch-start-time", type=float, default=None)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 
@@ -44,6 +45,7 @@ def estimate_progress(
     completion_times: list[tuple[int, float]],
     total_epochs: int,
     now: float,
+    current_epoch_start_time: float | None = None,
 ) -> dict[str, float]:
     if total_epochs < 1:
         raise ValueError("total_epochs must be positive")
@@ -61,13 +63,17 @@ def estimate_progress(
 
     last_completion = completion_times[-1][1]
     mean_epoch_seconds = (last_completion - start_time) / completed_epochs
-    expected_finish = last_completion + mean_epoch_seconds * (
+    current_epoch_start = max(
+        last_completion,
+        current_epoch_start_time or last_completion,
+    )
+    expected_finish = current_epoch_start + mean_epoch_seconds * (
         total_epochs - completed_epochs
     )
     result.update(
         {
             "mean_epoch_hours": mean_epoch_seconds / 3600.0,
-            "estimated_total_hours": mean_epoch_seconds * total_epochs / 3600.0,
+            "estimated_total_hours": (expected_finish - start_time) / 3600.0,
             "eta_hours": max(expected_finish - now, 0.0) / 3600.0,
             "expected_finish_unix_seconds": expected_finish,
         }
@@ -78,7 +84,7 @@ def estimate_progress(
     elif mean_epoch_seconds > 0:
         result["current_epoch"] = float(completed_epochs + 1)
         result["current_epoch_progress_percent"] = min(
-            100.0 * max(now - last_completion, 0.0) / mean_epoch_seconds,
+            100.0 * max(now - current_epoch_start, 0.0) / mean_epoch_seconds,
             99.9,
         )
     return result
@@ -152,6 +158,7 @@ def log_progress(
     output_dir: Path,
     total_epochs: int,
     timezone_name: str,
+    current_epoch_start_time: float | None = None,
     log_epoch_metrics: bool = True,
     update_overview: bool = True,
 ) -> int:
@@ -164,6 +171,7 @@ def log_progress(
         completion_times=completion_times,
         total_epochs=total_epochs,
         now=now,
+        current_epoch_start_time=current_epoch_start_time,
     )
     completed_epochs = int(estimate["completed_epochs"])
     timestamp_ms = int(now * 1000)
@@ -233,6 +241,7 @@ def main() -> None:
             output_dir=args.output_dir,
             total_epochs=args.total_epochs,
             timezone_name=args.timezone,
+            current_epoch_start_time=args.current_epoch_start_time,
             log_epoch_metrics=epoch_changed,
             update_overview=epoch_changed or overview_due,
         )

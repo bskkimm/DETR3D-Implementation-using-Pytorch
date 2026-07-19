@@ -3,7 +3,13 @@ import random
 import numpy as np
 import torch
 
-from train import capture_rng_state, restore_rng_state, seed_worker, set_seed
+from train import (
+    _mlflow_param_updates,
+    capture_rng_state,
+    restore_rng_state,
+    seed_worker,
+    set_seed,
+)
 
 
 def test_set_seed_repeats_python_numpy_and_torch_values():
@@ -52,3 +58,13 @@ def test_seed_worker_uses_torch_worker_seed(monkeypatch):
     second = (random.random(), np.random.rand())
 
     assert first == second
+
+
+def test_mlflow_resume_only_adds_new_params_and_records_changes():
+    additions, changes = _mlflow_param_updates(
+        {"epochs": "24", "batch_size": "4"},
+        {"epochs": "10", "batch_size": "4", "resume": "checkpoint.pt"},
+    )
+
+    assert additions == {"resume": "checkpoint.pt"}
+    assert changes == {"epochs": {"original": "24", "resume": "10"}}

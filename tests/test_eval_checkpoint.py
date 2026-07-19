@@ -135,8 +135,8 @@ def test_main_loads_checkpoint_before_c6_construction_and_loads_strictly(
         grid_mask=False,
     )
 
-    def fake_load(path, *, map_location):
-        events.append(("load", path, map_location))
+    def fake_load(path, *, map_location, weights_only):
+        events.append(("load", path, map_location, weights_only))
         return checkpoint
 
     class FakeDataset:
@@ -180,7 +180,7 @@ def test_main_loads_checkpoint_before_c6_construction_and_loads_strictly(
         "eval",
         "export",
     ]
-    assert events[0][2:] == ("cpu",)
+    assert events[0][2:] == ("cpu", False)
     assert events[1][1]["image_size"] == (450, 800)
     assert events[1][1]["official_image_preprocessing"] is True
     assert events[2][1]["official_image_backbone"] is True

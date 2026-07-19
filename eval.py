@@ -164,7 +164,7 @@ def resolve_checkpoint_class_names(
 
 def main() -> None:
     args = parse_args()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint must be a mapping")
     config = resolve_checkpoint_config(args, checkpoint)

@@ -118,6 +118,20 @@ Resume only from a completed epoch checkpoint. Keep every model, data,
 accumulation, scheduler, validation, MLflow, and thermal argument unchanged.
 Set `--epochs` to the remaining epoch count, add `--resume` pointing to the
 latest `checkpoint_epoch_XXXX.pt`, and omit `--init-fcos3d-checkpoint`.
+To continue logging to the original MLflow run, also pass its ID with
+`--mlflow-run-id`.
+
+### Epoch 15 Watchdog Recovery
+
+The initial process stopped during epoch 15 at 2026-07-19 16:38 JST. Kernel
+logs recorded NVIDIA `Xid 8` and `krcWatchdog_IMPL: GPU is probably locked`;
+the process then aborted with `cudaErrorLaunchTimeout`. This was not a thermal
+policy pause, and epoch 15 did not complete.
+
+CUDA was responsive after the watchdog reset. Training resumed at
+2026-07-20 01:10 JST from `checkpoint_epoch_0014.pt`, preserving model,
+optimizer, scheduler, RNG, and prior history state. The resumed process runs
+epochs 15-24 and continues the original MLflow run.
 
 ## Official Final Evaluation
 

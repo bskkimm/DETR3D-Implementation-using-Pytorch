@@ -96,6 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow-tracking-uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--mlflow-experiment", type=str, default="detr3d-small-training")
     parser.add_argument("--mlflow-run-name", type=str, default=None)
+    parser.add_argument("--mlflow-run-id", type=str, default=None)
     parser.add_argument("--mlflow-log-checkpoints", action="store_true")
     parser.add_argument("--thermal-check-interval", type=float, default=60.0)
     parser.add_argument("--max-gpu-temp", type=float, default=85.0)
@@ -163,6 +164,18 @@ def _git_output(*args: str) -> str | None:
     return result.stdout.strip() or None
 
 
+def _mlflow_param_updates(
+    existing: dict[str, str], requested: dict[str, str]
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    additions = {key: value for key, value in requested.items() if key not in existing}
+    changes = {
+        key: {"original": existing[key], "resume": value}
+        for key, value in requested.items()
+        if key in existing and existing[key] != value
+    }
+    return additions, changes
+
+
 def _start_mlflow_run(args: argparse.Namespace, dataset_size: int, output_dir: Path):
     if not args.mlflow:
         return None
@@ -172,13 +185,21 @@ def _start_mlflow_run(args: argparse.Namespace, dataset_size: int, output_dir: P
         raise RuntimeError("MLflow logging requested, but mlflow is not installed.") from exc
 
     mlflow.set_tracking_uri(args.mlflow_tracking_uri)
-    mlflow.set_experiment(args.mlflow_experiment)
-    run_name = args.mlflow_run_name or output_dir.name
-    mlflow.start_run(run_name=run_name)
+    if args.mlflow_run_id is not None:
+        mlflow.start_run(run_id=args.mlflow_run_id)
+    else:
+        mlflow.set_experiment(args.mlflow_experiment)
+        run_name = args.mlflow_run_name or output_dir.name
+        mlflow.start_run(run_name=run_name)
     params = {key: str(value) for key, value in vars(args).items()}
     params["dataset_size"] = str(dataset_size)
     params["output_dir"] = str(output_dir)
-    mlflow.log_params(params)
+    existing_params = dict(mlflow.active_run().data.params)
+    additions, changes = _mlflow_param_updates(existing_params, params)
+    if additions:
+        mlflow.log_params(additions)
+    if changes:
+        mlflow.set_tag("resume_parameter_overrides", json.dumps(changes, sort_keys=True))
     tags = {
         "git_branch": _git_output("branch", "--show-current") or "unknown",
         "git_commit": _git_output("rev-parse", "HEAD") or "unknown",
@@ -485,7 +506,11 @@ def main() -> None:
     best_eval_metric = float("inf")
     resume_checkpoint = None
     if args.resume is not None:
-        resume_checkpoint = torch.load(args.resume, map_location=device)
+        resume_checkpoint = torch.load(
+            args.resume,
+            map_location="cpu",
+            weights_only=False,
+        )
         saved_args = resume_checkpoint.get("args", {})
         for name in ("accumulation_steps", "batch_size", "cbgs"):
             saved_value = saved_args.get(name, 1 if name == "accumulation_steps" else False)
