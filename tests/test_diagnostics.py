@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 import detr3d.engine.diagnostics as diagnostics
-from detr3d.engine.diagnostics import decode_predictions
+from detr3d.engine.diagnostics import decode_predictions, denormalize_image
 
 
 class StubModel(nn.Module):
@@ -37,6 +37,21 @@ def test_decode_predictions_returns_empty_when_none_pass_threshold():
     assert labels.dtype == torch.long
 
 
+def test_denormalize_image_restores_official_bgr_pixels_as_rgb():
+    bgr_pixel = torch.tensor([30.0, 20.0, 10.0]).view(3, 1, 1)
+    official_mean = torch.tensor([103.530, 116.280, 123.675]).view(3, 1, 1)
+
+    image = denormalize_image(
+        bgr_pixel - official_mean,
+        official_preprocessing=True,
+    )
+
+    torch.testing.assert_close(
+        image[0, 0],
+        torch.tensor([10.0, 20.0, 30.0]) / 255.0,
+    )
+
+
 def test_evaluate_samples_limits_artifacts_without_limiting_metrics(
     monkeypatch, tmp_path
 ):
@@ -50,14 +65,14 @@ def test_evaluate_samples_limits_artifacts_without_limiting_metrics(
     ]
     saved_overlays = []
     saved_bevs = []
-    empty_boxes = torch.zeros((0, 9))
-    empty_scores = torch.zeros((0,))
-    empty_labels = torch.zeros((0,), dtype=torch.long)
+    pred_boxes = torch.zeros((2, 9))
+    pred_scores = torch.tensor([0.2, 0.4])
+    pred_labels = torch.zeros((2,), dtype=torch.long)
 
     monkeypatch.setattr(
         diagnostics,
         "decode_predictions",
-        lambda **kwargs: (empty_boxes, empty_scores, empty_labels),
+        lambda **kwargs: (pred_boxes, pred_scores, pred_labels),
     )
     monkeypatch.setattr(
         diagnostics,
@@ -73,12 +88,12 @@ def test_evaluate_samples_limits_artifacts_without_limiting_metrics(
     monkeypatch.setattr(
         diagnostics,
         "save_overlay_figure",
-        lambda *args, **kwargs: saved_overlays.append(args[4]),
+        lambda *args, **kwargs: saved_overlays.append((args[4], args[2].clone())),
     )
     monkeypatch.setattr(
         diagnostics,
         "save_bev_figure",
-        lambda *args, **kwargs: saved_bevs.append(args[3]),
+        lambda *args, **kwargs: saved_bevs.append((args[3], args[2].clone())),
     )
 
     result = diagnostics.evaluate_samples(
@@ -91,9 +106,12 @@ def test_evaluate_samples_limits_artifacts_without_limiting_metrics(
         overlay_dir=tmp_path / "overlays",
         bev_dir=tmp_path / "bev",
         artifact_sample_indices=[0, 3],
+        artifact_score_threshold=0.3,
         verbose=False,
     )
 
     assert result["num_samples"] == 5
     assert len(saved_overlays) == 2
     assert len(saved_bevs) == 2
+    for _, scores in saved_overlays + saved_bevs:
+        torch.testing.assert_close(scores, torch.tensor([0.4]))

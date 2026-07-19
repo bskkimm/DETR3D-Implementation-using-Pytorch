@@ -85,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=0)
     parser.add_argument("--eval-score-threshold", type=float, default=0.005)
     parser.add_argument("--eval-max-boxes", type=int, default=50)
+    parser.add_argument("--eval-artifact-score-threshold", type=float, default=0.3)
     parser.add_argument("--disable-eval-artifacts", action="store_true")
     parser.add_argument("--num-eval-artifact-samples", type=int, default=None)
     parser.add_argument("--disable-auxiliary-losses", action="store_true")
@@ -576,6 +577,7 @@ def main() -> None:
                 overlay_dir=overlays_dir,
                 bev_dir=bev_dir,
                 artifact_sample_indices=eval_artifact_sample_indices,
+                artifact_score_threshold=args.eval_artifact_score_threshold,
                 verbose=False,
             )
             eval_summary_path = eval_dir / f"epoch_{epoch_idx:04d}.json"
@@ -636,6 +638,7 @@ def main() -> None:
             overlay_dir=final_overlays_dir,
             bev_dir=final_bev_dir,
             artifact_sample_indices=eval_artifact_sample_indices,
+            artifact_score_threshold=args.eval_artifact_score_threshold,
             verbose=False,
         )
         final_eval_path = output_dir / "final_eval.json"

@@ -133,10 +133,17 @@ def box7_to_corners(boxes: torch.Tensor) -> torch.Tensor:
     return corners + torch.stack([x, y, z], dim=-1)[:, None, :]
 
 
-def denormalize_image(image_tensor: torch.Tensor) -> torch.Tensor:
-    mean = torch.tensor([0.485, 0.456, 0.406], dtype=image_tensor.dtype).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], dtype=image_tensor.dtype).view(3, 1, 1)
-    image = (image_tensor.cpu() * std + mean).clamp(0.0, 1.0)
+def denormalize_image(
+    image_tensor: torch.Tensor, *, official_preprocessing: bool = False
+) -> torch.Tensor:
+    image = image_tensor.cpu()
+    if official_preprocessing:
+        mean = image.new_tensor([103.530, 116.280, 123.675]).view(3, 1, 1)
+        image = ((image + mean).flip(0) / 255.0).clamp(0.0, 1.0)
+    else:
+        mean = image.new_tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = image.new_tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        image = (image * std + mean).clamp(0.0, 1.0)
     return image.permute(1, 2, 0)
 
 
@@ -254,6 +261,7 @@ def save_overlay_figure(
     output_path: Path,
     *,
     original_image_shapes: list[tuple[int, int] | None] | None = None,
+    official_image_preprocessing: bool = False,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -269,7 +277,10 @@ def save_overlay_figure(
     fig, axes = plt.subplots(2, 3, figsize=(18, 7.5), constrained_layout=False)
     axes = axes.reshape(-1)
     for cam_idx, ax in enumerate(axes):
-        image = denormalize_image(sample["images"][cam_idx])
+        image = denormalize_image(
+            sample["images"][cam_idx],
+            official_preprocessing=official_image_preprocessing,
+        )
         lidar2img = sample["img_metas"]["lidar2img"][cam_idx]
         image_shape = sample["img_metas"]["image_shape"][cam_idx]
         original_image_shape = None if original_image_shapes is None else original_image_shapes[cam_idx]
@@ -456,6 +467,7 @@ def evaluate_samples(
     overlay_dir: Path | None = None,
     bev_dir: Path | None = None,
     artifact_sample_indices: Iterable[int] | None = None,
+    artifact_score_threshold: float | None = None,
     verbose: bool = True,
 ) -> dict:
     artifact_indices = (
@@ -480,17 +492,33 @@ def evaluate_samples(
         token = sample["img_metas"]["sample_token"]
         original_image_shapes = get_original_camera_shapes(dataset, sample_index, token)
         save_artifacts = artifact_indices is None or sample_index in artifact_indices
+        artifact_keep = (
+            torch.ones_like(pred_scores, dtype=torch.bool)
+            if artifact_score_threshold is None
+            else pred_scores >= artifact_score_threshold
+        )
+        artifact_boxes = pred_boxes[artifact_keep]
+        artifact_scores = pred_scores[artifact_keep]
+        artifact_labels = pred_labels[artifact_keep]
         if overlay_dir is not None and save_artifacts:
             save_overlay_figure(
                 sample,
-                pred_boxes,
-                pred_scores,
-                pred_labels,
+                artifact_boxes,
+                artifact_scores,
+                artifact_labels,
                 overlay_dir / f"{sample_index:04d}_{token}_overlay.png",
                 original_image_shapes=original_image_shapes,
+                official_image_preprocessing=bool(
+                    getattr(dataset, "official_image_preprocessing", False)
+                ),
             )
         if bev_dir is not None and save_artifacts:
-            save_bev_figure(sample["gt_boxes_ego"].cpu(), pred_boxes, pred_scores, bev_dir / f"{sample_index:04d}_{token}_bev.png")
+            save_bev_figure(
+                sample["gt_boxes_ego"].cpu(),
+                artifact_boxes,
+                artifact_scores,
+                bev_dir / f"{sample_index:04d}_{token}_bev.png",
+            )
 
     valid_dists = [row["mean_center_distance"] for row in sample_summaries if row["mean_center_distance"] is not None]
     valid_medians = [row["median_center_distance"] for row in sample_summaries if row["median_center_distance"] is not None]
