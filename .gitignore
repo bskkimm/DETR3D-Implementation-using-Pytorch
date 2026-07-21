@@ -18,3 +18,5 @@ mlruns/
 
 .env
 .venv/
+
+AGENTS.md
