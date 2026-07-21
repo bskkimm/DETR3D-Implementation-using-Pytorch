@@ -1,6 +1,6 @@
 # Full-Training 24-Epoch Root-Cause Analysis
 
-Status: Open
+Status: Resolved
 
 Date: 2026-07-15
 
@@ -15,6 +15,19 @@ Tracking issue: https://github.com/bskkimm/DETR3D-Implementation-using-Pytorch/i
 ## Purpose
 
 This document tracks the diagnosis and remediation of poor qualitative and quantitative validation behavior from the first 24-epoch full nuScenes run. It is the durable technical record for this incident. GitHub issues should track implementation work and link back to this document.
+
+## Post-Hoc Official Evaluation
+
+After the official exporter became available, the preserved non-faithful
+epoch-24 checkpoint was evaluated on all 6,019 validation samples:
+
+| Run | mAP | NDS | mATE | mASE | mAOE | mAVE | mAAE |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Earlier non-faithful | 31.73 | 38.75 | 0.7913 | 0.2796 | 0.4094 | 0.9969 | 0.2344 |
+| Faithful C6 | 34.58 | 42.15 | 0.7687 | 0.2711 | 0.4007 | 0.8664 | 0.2070 |
+
+The parity work improved mAP by 2.85 points and NDS by 3.40 points. The faithful
+run matches the official ResNet-101 base result of 34.7 mAP / 42.2 NDS.
 
 ## Observed Symptoms
 
