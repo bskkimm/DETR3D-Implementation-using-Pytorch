@@ -1,30 +1,24 @@
 # DETR3D Command Guide
 
-The active full-training command is documented in
+The successful faithful full-training command is documented in
 `docs/analysis/c6-full-training.md`. That note is authoritative for the base
 C6 effective-batch-8 run, checkpoint recovery, periodic validation, and
 official final evaluation. The cancelled CBGS setup remains recorded in
 `docs/analysis/c6-cbgs-full-training.md`.
 
 This guide includes two tracks:
-- the current canonical regression baseline used for reproduction on `exp/official-copy`
+- the accepted faithful C6 training/evaluation path on `main`
+- a lightweight deterministic one-sample implementation regression
 - older paper-oriented commands kept as secondary reference
-
-## Branch Phase Plan
-
-- `exp/official-copy` is the stable official-like baseline branch.
-- Use a small-training/search branch, currently `exp/official-copy-experiments`, to find the best setup before broad training.
-- Commit and push coherent experiment steps on the small-training branch.
-- Once the best small-training setup is selected, create a full-training branch such as `exp/official-copy-full-training` from that accepted commit.
-- Keep full-training changes separate from exploratory small-training changes.
 
 ## Current Canonical Baseline
 
-For current reproduction and regression checks, use the seeded one-sample runner from the March 23 handoff note instead of the older paper-oriented defaults below.
+Use the seeded one-sample runner below as a fast implementation regression. It
+uses the historical lightweight setup and is not representative of faithful C6
+quality. Official nuScenes mAP/NDS remains the promotion metric.
 
 Canonical conditions:
-- baseline branch: `exp/official-copy`
-- active small-training branch: `exp/official-copy-experiments`
+- baseline branch: `main`
 - script: `python detr3d/scripts/overfit_one_batch.py`
 - dataset: `--dataroot /home/user/datasets/nuscenes --version v1.0-trainval`
 - sample: `--sample-index 0`
@@ -62,12 +56,13 @@ python detr3d/scripts/overfit_one_batch.py \
   --output-json outputs/overfit_one_sample.json
 ```
 
-Canonical expected result from `outputs/overfit_one_sample.json`:
-- `class_matches = 10/10`
-- `mean_center_distance = 2.3838 m`
-- `median_center_distance = 2.1390 m`
-- `loss_cls = 0.3164`
-- `loss_bbox = 1.6248`
+Canonical expected result from `outputs/overfit_one_sample.json` on the faithful
+implementation:
+- `class_matches = 7/10`
+- `mean_center_distance = 3.5343 m`
+- `median_center_distance = 3.4936 m`
+- `loss_cls = 0.3412`
+- `loss_bbox = 1.9720`
 
 ## MLflow Tracking
 
