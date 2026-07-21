@@ -1,0 +1,673 @@
+# DETR3D Command Guide
+
+The successful faithful full-training command is documented in
+`docs/analysis/c6-full-training.md`. That note is authoritative for the base
+C6 effective-batch-8 run, checkpoint recovery, periodic validation, and
+official final evaluation. The cancelled CBGS setup remains recorded in
+`docs/analysis/c6-cbgs-full-training.md`.
+
+This guide includes two tracks:
+- the accepted faithful C6 training/evaluation path on `main`
+- a lightweight deterministic one-sample implementation regression
+- older paper-oriented commands kept as secondary reference
+
+## Current Canonical Baseline
+
+Use the seeded one-sample runner below as a fast implementation regression. It
+uses the historical lightweight setup and is not representative of faithful C6
+quality. Official nuScenes mAP/NDS remains the promotion metric.
+
+Canonical conditions:
+- baseline branch: `main`
+- script: `python detr3d/scripts/overfit_one_batch.py`
+- dataset: `--dataroot /home/user/datasets/nuscenes --version v1.0-trainval`
+- sample: `--sample-index 0`
+- image size: `--image-height 832 --image-width 1472`
+- queries: `--num-queries 100`
+- epochs: `--epochs 60`
+- optimizer: `--lr 2e-4 --backbone-lr-mult 0.1 --weight-decay 0.01`
+- loss/classification: `--loss-cls-weight 1.0 --focal-alpha 0.5 --focal-gamma 1.5`
+- scheduler: `--scheduler none`
+- stability: `--max-boxes 100 --grad-clip-norm 35 --seed 0 --deterministic`
+- output: `--output-json outputs/overfit_one_sample.json`
+
+Canonical command:
+
+```bash
+python detr3d/scripts/overfit_one_batch.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --sample-index 0 \
+  --image-height 832 \
+  --image-width 1472 \
+  --num-queries 100 \
+  --epochs 60 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --max-boxes 100 \
+  --grad-clip-norm 35 \
+  --seed 0 \
+  --deterministic \
+  --output-json outputs/overfit_one_sample.json
+```
+
+Canonical expected result from `outputs/overfit_one_sample.json` on the faithful
+implementation:
+- `class_matches = 7/10`
+- `mean_center_distance = 3.5343 m`
+- `median_center_distance = 3.4936 m`
+- `loss_cls = 0.3412`
+- `loss_bbox = 1.9720`
+
+## MLflow Tracking
+
+MLflow is installed in the current `torch_env` environment. The default local tracking backend for this repo is SQLite:
+
+```bash
+sqlite:///mlflow.db
+```
+
+Start the local UI from the repository root:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000
+```
+
+Enable tracking on training runs with:
+
+```bash
+--mlflow \
+--mlflow-experiment detr3d-small-training \
+--mlflow-run-name filtered_q100_bs2_832x1472_e120
+```
+
+Training logs CLI args as params, git branch/commit as tags, per-epoch train metrics, periodic eval metrics, `history.json`, and `final_eval.json`. When eval artifacts are enabled, labeled camera overlays and BEV images are also logged under `eval_artifacts/`. Checkpoints are not copied into MLflow by default to avoid duplicating large files; add `--mlflow-log-checkpoints` only for small or important runs.
+
+For normal experiment runs, generate images by setting `--num-eval-samples` and `--eval-every` and do not pass `--disable-eval-artifacts`. Use `--disable-eval-artifacts` only for smoke/debug runs where speed matters more than visual review.
+
+Smoke-test command used to verify local MLflow setup:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --batch-size 1 \
+  --epochs 1 \
+  --num-workers 0 \
+  --image-height 832 \
+  --image-width 1472 \
+  --filter-gt-by-range \
+  --filter-zero-point-gt \
+  --backbone resnet101 \
+  --num-queries 10 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --grad-clip-norm 35 \
+  --output-dir outputs/mlflow_smoke \
+  --num-eval-samples 1 \
+  --eval-every 1 \
+  --eval-score-threshold 0.005 \
+  --eval-max-boxes 10 \
+  --mlflow \
+  --mlflow-experiment detr3d-smoke \
+  --mlflow-run-name mlflow_smoke
+```
+
+## GPU And Data-Loader Sizing
+
+Before full training, find the strongest stable small-training configuration for the available machine. The current workstation has a large GPU budget and a 32-logical-CPU host, so tune both GPU memory use and CPU image loading.
+
+Use `detr3d/scripts/benchmark_forward.py` for short throughput probes. It reports dataloader wait time, training-step time, samples/sec, and CUDA peak memory.
+
+Start by finding a good dataloader worker count at the baseline resolution:
+
+```bash
+python detr3d/scripts/benchmark_forward.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 4 \
+  --num-workers 4 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 832 \
+  --image-width 1472 \
+  --num-queries 100 \
+  --use-amp \
+  --warmup-steps 3 \
+  --steps 10 \
+  --output-json outputs/bench/bs4_w4_832x1472_q100.json
+```
+
+Repeat with `--num-workers 0`, `2`, `4`, `8`, `12`, and `16`. Prefer the smallest worker count where `mean_data_time_sec` is consistently much lower than `mean_step_time_sec`. If data wait remains high, keep `--pin-memory`, `--persistent-workers`, and increase `--prefetch-factor` to `6` or `8`.
+
+Then scale GPU use in this order:
+
+1. Increase `--batch-size`: `1`, `2`, `4`, `8`, then higher only if memory and throughput justify it.
+2. Increase image size: baseline `832x1472`, then official-ish `900x1600`.
+3. Increase `--num-queries`: `100`, `300`, `600`, `900`.
+
+For a 96GB GPU, aim for high but safe peak memory, roughly 80-90GB reserved during the benchmark. Avoid configurations that only fit with almost no headroom, because eval, checkpointing, fragmentation, and longer runs can still OOM.
+
+Example heavier probe:
+
+```bash
+python detr3d/scripts/benchmark_forward.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 4 \
+  --num-workers 8 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 900 \
+  --image-width 1600 \
+  --num-queries 300 \
+  --use-amp \
+  --warmup-steps 3 \
+  --steps 10 \
+  --output-json outputs/bench/bs4_w8_900x1600_q300.json
+```
+
+Only after a configuration has good benchmark throughput should it be used for `8`, `32`, and `64` sample small-training runs.
+
+Measured on the current 32-logical-CPU host and RTX PRO 6000 Blackwell 96GB GPU, the first throughput-oriented starting points were:
+
+- throughput-oriented small training: `832x1472`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
+- official-resolution parity check: `900x1600`, `batch-size 8`, `num-queries 900`, `num-workers 16`, `prefetch-factor 4`, AMP on
+
+Observed benchmark summaries:
+
+- `832x1472`, batch `8`, queries `900`: about `4.28` samples/sec, `70.7GB` CUDA reserved
+- `900x1600`, batch `8`, queries `900`: about `3.76` samples/sec, `86.2GB` CUDA reserved
+- `900x1600`, batch `9`, queries `900`: fits at about `91.8GB` reserved but is slower and leaves little headroom, so avoid it for normal long runs
+- dataloader workers: `12-16` workers remove CPU wait after warmup; prefer `16` for heavy runs unless the rest of the system needs CPU headroom
+
+Important training-quality finding:
+
+- AMP currently hurts optimization in this repo. Use AMP for throughput probes only, not for quality-sensitive one-sample or small-training experiments until this is investigated.
+- No-AMP `832x1472`, batch `4`, queries `100` uses about `86.5GB` CUDA reserved and preserves the one-sample learning behavior.
+- The best current small-training result is `8` samples, `batch-size 4`, `num-queries 100`, no AMP, `60` epochs: `total_class_matches = 73/96`, `mean_center_distance = 5.3142 m`, `mean_median_center_distance = 1.7730 m`.
+- The best current `64`-sample run is no-AMP `832x1472`, `batch-size 2`, `num-queries 100`, `60` epochs with eval artifacts disabled: final 8-sample eval `total_class_matches = 80/96`, `mean_center_distance = 4.5565 m`, `mean_median_center_distance = 1.0175 m`; best training epoch `58`, `loss = 8.1146`, `loss_cls = 0.0943`, `loss_bbox = 1.3158`.
+- Extending that run to `120` total epochs improved all-64 eval from `1106/1319` to `1176/1319` class matches, `mean_center_distance = 3.1585 m`, `mean_median_center_distance = 1.0007 m`; best training epoch `117`, `loss = 6.0172`, `loss_cls = 0.0165`, `loss_bbox = 1.0095`.
+- The remaining large mean-center-distance errors are dominated by far GT outliers. Worst samples include annotations outside the official point-cloud range and often with zero lidar/radar points, so the next parity experiment should add official-style GT filtering before more epoch or batch-size tuning.
+- Official-style opt-in GT filtering was added with `--filter-gt-by-range --filter-zero-point-gt`. On the 64-sample subset it reduces GT count from `1319` to `1103` with no empty samples.
+- Filtered 64-sample no-AMP `832x1472`, `batch-size 2`, `num-queries 100`, `120` total epochs: all-64 eval `total_class_matches = 982/1103`, `mean_center_distance = 1.0215 m`, `mean_median_center_distance = 0.9022 m`; best training epoch `115`, `loss = 3.3196`, `loss_cls = 0.0186`, `loss_bbox = 0.5467`.
+- Official-like filtered 64-sample no-AMP `900x1600`, `batch-size 2`, `num-queries 900`, `120` total epochs is the current best small-training result: all-64 eval `total_class_matches = 1077/1103`, `mean_center_distance = 0.6777 m`, `mean_median_center_distance = 0.5308 m`; best/latest training epoch `120`, `loss = 2.7725`, `loss_cls = 0.0261`, `loss_bbox = 0.4830`. Initial run hit the 30-minute shell timeout after epoch 62, not a CUDA/model failure; it resumed cleanly from `checkpoint_epoch_0060.pt`.
+- Official-like filtered 256-sample no-AMP `900x1600`, `batch-size 2`, `num-queries 900`, `60` epochs scales cleanly: all-256 train-subset eval `total_class_matches = 7558/8083`, `mean_center_distance = 0.8565 m`, `mean_median_center_distance = 0.6692 m`; best/latest training epoch `60`, `loss = 3.6838`, `loss_cls = 0.0477`, `loss_bbox = 0.5563`. MLflow run id `22ebe0c38bf549578e678743141c4f07` under `detr3d-small-training`.
+- No-AMP `batch-size 4` can trigger a CUDA launch timeout on this display-attached GPU during longer 64-sample runs. Prefer `batch-size 2` for stable quality experiments unless running headless or after confirming the watchdog is disabled.
+- High-throughput AMP runs with `batch-size 8`, `num-queries 900` stayed nearly flat and are not recommended for quality yet.
+
+Recommended first small-training command after the one-sample regression check:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --batch-size 4 \
+  --epochs 60 \
+  --num-workers 12 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 832 \
+  --image-width 1472 \
+  --filter-gt-by-range \
+  --filter-zero-point-gt \
+  --backbone resnet101 \
+  --num-queries 100 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_8_832x1472_q100_bs4_noamp_e60 \
+  --save-every 20
+```
+
+Evaluate it without plot artifacts if `matplotlib` is unavailable:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_8_832x1472_q100_bs4_noamp_e60/final_checkpoint.pt \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --num-eval-samples 8 \
+  --image-height 832 \
+  --image-width 1472 \
+  --backbone resnet101 \
+  --num-queries 100 \
+  --score-threshold 0.005 \
+  --max-boxes 100 \
+  --quiet \
+  --summary-out outputs/overfit_8_832x1472_q100_bs4_noamp_e60/eval_8.json
+```
+
+Use the stable `batch-size 2` setup below for `64`-sample quality checks on this display-attached GPU, not AMP/q900.
+
+Current recommended `64`-sample quality command:
+
+```bash
+python3 train.py \
+  --dataroot /home/beomseokkim2/dataset/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 2 \
+  --epochs 60 \
+  --num-workers 12 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --image-height 832 \
+  --image-width 1472 \
+  --backbone resnet101 \
+  --num-queries 100 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --loss-cls-weight 1.0 \
+  --focal-alpha 0.5 \
+  --focal-gamma 1.5 \
+  --scheduler none \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_64_832x1472_q100_bs2_noamp_e60 \
+  --save-every 20 \
+  --num-eval-samples 8 \
+  --eval-every 20 \
+  --eval-score-threshold 0.005 \
+  --eval-max-boxes 100
+```
+
+## Older Paper-Oriented Reference
+
+The sections below describe the older paper-oriented package setup and should not be treated as the primary regression baseline when they conflict with the canonical settings above.
+
+This guide now targets a more paper-oriented DETR3D package setup:
+- ResNet-101 backbone
+- 4-output FPN
+- 900 queries
+- LiDAR-frame boxes and `lidar2img`
+- sigmoid focal classification
+- auxiliary decoder losses enabled by default
+- AdamW with backbone LR multiplier and cosine schedule
+
+One sample means one nuScenes timestamp with 6 camera images, not one RGB image.
+The notebook now imports the package modules directly, so these commands and the notebook should stay aligned.
+
+Important practical note:
+- the rebuilt defaults are much heavier than the old notebook scaffold
+- default image size is now `900x1600`
+- `900` queries and a ResNet-101 backbone will use much more memory and time than the earlier debug model
+- for initial sanity checks, prefer `batch-size 1`
+
+## 1. One-Sample Overfit
+
+### Paper-Oriented Default
+
+This is the recommended starting point for the rebuilt project.
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --batch-size 1 \
+  --epochs 300 \
+  --num-workers 0 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_1sample \
+  --save-every 50 \
+  --num-eval-samples 1 \
+  --eval-every 50
+```
+
+### Last-Layer-Only Ablation
+
+Use this only if you intentionally want to disable DETR3D-style auxiliary decoder supervision.
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --batch-size 1 \
+  --epochs 300 \
+  --num-workers 0 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_1sample_no_aux \
+  --save-every 50 \
+  --num-eval-samples 1 \
+  --eval-every 50 \
+  --disable-auxiliary-losses
+```
+
+Outputs:
+- `outputs/overfit_1sample/history.json`
+- `outputs/overfit_1sample/last_checkpoint.pt`
+- `outputs/overfit_1sample/final_checkpoint.pt`
+- `outputs/overfit_1sample/checkpoint_epoch_0050.pt` etc.
+- `outputs/overfit_1sample/best_eval_checkpoint.pt` if eval is enabled
+- `outputs/overfit_1sample/eval/epoch_0050.json` etc.
+- `outputs/overfit_1sample/eval_artifacts/epoch_0050/overlays/`
+- `outputs/overfit_1sample/eval_artifacts/epoch_0050/bev/`
+
+Sanity check:
+- paper-oriented default should print decoder-layer losses
+- `--disable-auxiliary-losses` should remove `d0.loss_* ...`
+
+## 2. Resume Training
+
+Resume from the last checkpoint for another 100 epochs.
+Use a saved periodic checkpoint if the previous run stopped before writing `final_checkpoint.pt`:
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --batch-size 1 \
+  --epochs 100 \
+  --num-workers 0 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_1sample_resume \
+  --resume outputs/overfit_1sample/final_checkpoint.pt \
+  --save-every 50 \
+  --num-eval-samples 1 \
+  --eval-every 50
+```
+
+## 3. Evaluate One Sample
+
+Run notebook-style numeric diagnostics, save overlay images, and save BEV figures:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_1sample/best_eval_checkpoint.pt \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 1 \
+  --sample-index 0 \
+  --score-threshold 0.005 \
+  --max-boxes 50 \
+  --save-overlay-dir outputs/overfit_1sample/overlays \
+  --save-bev-dir outputs/overfit_1sample/bev
+```
+
+Outputs:
+- `outputs/overfit_1sample/best_eval_checkpoint.eval.json`
+- `outputs/overfit_1sample/overlays/0000_<sample_token>_overlay.png`
+- `outputs/overfit_1sample/bev/0000_<sample_token>_bev.png`
+
+## 4. Evaluate Multiple Samples
+
+Evaluate a small slice of the dataset and aggregate results:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_1sample/best_eval_checkpoint.pt \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --sample-indices 0,1,2,3 \
+  --score-threshold 0.005 \
+  --max-boxes 50 \
+  --save-overlay-dir outputs/eval_multi/overlays \
+  --save-bev-dir outputs/eval_multi/bev \
+  --summary-out outputs/eval_multi/summary.json
+```
+
+Or evaluate the first 4 samples automatically:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_1sample/best_eval_checkpoint.pt \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --num-eval-samples 4 \
+  --score-threshold 0.005 \
+  --max-boxes 50 \
+  --save-overlay-dir outputs/eval_multi/overlays \
+  --save-bev-dir outputs/eval_multi/bev
+```
+
+## 5. Eight-Sample Overfit
+
+Once one-sample overfit is good, move to 8 samples:
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --batch-size 1 \
+  --epochs 150 \
+  --num-workers 0 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_8samples \
+  --save-every 25 \
+  --num-eval-samples 4 \
+  --eval-every 25
+```
+
+If you want the same run with auxiliary decoder losses disabled:
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --batch-size 1 \
+  --epochs 150 \
+  --num-workers 0 \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/overfit_8samples_no_aux \
+  --save-every 25 \
+  --num-eval-samples 4 \
+  --eval-every 25 \
+  --disable-auxiliary-losses
+```
+
+Then inspect:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/overfit_8samples/best_eval_checkpoint.pt \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 8 \
+  --num-eval-samples 4 \
+  --score-threshold 0.005 \
+  --max-boxes 50 \
+  --save-overlay-dir outputs/overfit_8samples/overlays \
+  --save-bev-dir outputs/overfit_8samples/bev
+```
+
+## 6. Medium-Scale Confidence Run
+
+Before broad training, run a medium subset to confirm that the package path stays stable beyond tiny overfit experiments:
+
+Start with `batch-size 1` if you are unsure about memory. Move to `2` only after confirming the rebuilt detector fits comfortably.
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 2 \
+  --epochs 75 \
+  --num-workers 4 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --use-amp \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_64 \
+  --save-every 10 \
+  --num-eval-samples 8 \
+  --eval-every 10
+```
+
+Then inspect:
+
+```bash
+python3 eval.py \
+  --checkpoint outputs/train_64/best_eval_checkpoint.pt \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --num-eval-samples 8 \
+  --score-threshold 0.005 \
+  --max-boxes 50 \
+  --save-overlay-dir outputs/train_64/overlays \
+  --save-bev-dir outputs/train_64/bev
+```
+
+If you want the same run with auxiliary losses disabled:
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 64 \
+  --batch-size 2 \
+  --epochs 75 \
+  --num-workers 4 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --use-amp \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_64_no_aux \
+  --save-every 10 \
+  --num-eval-samples 8 \
+  --eval-every 10 \
+  --disable-auxiliary-losses
+```
+
+## 7. Fuller Training
+
+After the `1` sample, `8` sample, and medium-scale subset stages look stable:
+
+Only use this after the earlier stages look sane. The rebuilt detector is much heavier than the original debug setup, so don’t treat this as a casual first run.
+
+```bash
+python3 train.py \
+  --dataroot /home/user/datasets/nuscenes \
+  --version v1.0-trainval \
+  --max-samples 128 \
+  --batch-size 2 \
+  --epochs 50 \
+  --num-workers 4 \
+  --prefetch-factor 4 \
+  --pin-memory \
+  --persistent-workers \
+  --use-amp \
+  --lr 2e-4 \
+  --backbone-lr-mult 0.1 \
+  --weight-decay 0.01 \
+  --grad-clip-norm 35 \
+  --output-dir outputs/train_128 \
+  --save-every 10 \
+  --num-eval-samples 8 \
+  --eval-every 10
+```
+
+If your GPU memory is comfortable, try `--batch-size 4`.
+If you hit OOM, fall back to `--batch-size 2`, then `1`, or reduce `--num-workers`.
+
+## What To Look For
+
+One-sample overfit should show:
+- low mean center distance
+- mostly one-to-one query usage
+- `w/l/h` close to GT
+- strong top scores
+
+Eight-sample overfit should show:
+- no severe query collapse
+- center distances still reasonable
+- less small-object confusion than the one-sample run
+
+Medium-scale confidence runs should show:
+- stable eval metrics across several checkpoints
+- no sudden collapse after scaling from `8` samples
+- reasonable overlays and BEV plots on multiple eval samples
+- better GPU utilization than the `1`-sample overfit run
+
+Larger training should show:
+- stable eval metrics across several saved checkpoints
+- `best_eval_checkpoint.pt` outperforming the final checkpoint when overfitting starts
+
+Auxiliary-loss ablation should show:
+- whether disabling auxiliary losses helps or hurts this reproduction
+- whether query sharing increases or decreases
+- whether center error improves or gets worse
+
+## Recommended Next Steps
+
+After these additions, the most useful next steps are:
+
+1. Run `1` sample paper-oriented overfit and confirm the detector can still fit one scene.
+2. Run the same `1` sample setup with `--disable-auxiliary-losses` only as an ablation.
+3. Run `8` sample overfit and compare `best_eval_checkpoint.pt` against `final_checkpoint.pt`.
+4. Run a `64`-sample confidence check before broad training.
+5. If small-object confusion remains high, focus next on:
+   - class imbalance handling
+   - image augmentations closer to the original pipeline
+   - stronger pretrained initialization
+   - more careful small-object supervision
+6. Only then scale to broader training.
+
+## Notebook Note
+
+The notebook now imports the package backbone, neck, transformer, head, loss, and trainer instead of redefining them.
+That means:
+- if you change package code, the notebook follows it after rerunning the affected cells
+- the old notebook-only debug commands are no longer the authoritative reference
+- this guide is now the canonical run reference for both package and notebook behavior

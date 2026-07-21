@@ -1,9 +1,14 @@
 torch
 torchvision
 numpy
+scipy
+opencv-python
 Pillow
 matplotlib
+mlflow
+nuscenes-devkit
 jupyter
 pre-commit
+pytest
 ruff
 black
