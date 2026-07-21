@@ -168,3 +168,26 @@ Training loss decreased from 11.8194 to 4.3799, classification loss from 0.7558
 to 0.2162, and box loss from 1.0772 to 0.4554. Fixed-subset mean center distance
 decreased from 2.2059 m to 1.3812 m. The final validation overlays use correct
 Caffe/BGR denormalization and a display-only score threshold of 0.3.
+
+This supports a successful single-seed reproduction of the upstream reported
+result. It is not a claim of bit-identical optimization or multi-seed
+statistical equivalence: the pure-PyTorch run uses one GPU with gradient
+accumulation rather than the upstream multi-GPU DDP execution.
+
+## Per-Epoch Official Evaluation
+
+Status: Running
+
+Started: 2026-07-21 13:20 JST
+
+All 24 checkpoints are being evaluated on the complete 6,019-sample validation
+split. Epochs 18 and 24 reuse the completed official summaries. Results are
+written incrementally to:
+
+- `outputs/c6_full_v1/official_val/by_epoch/epoch_metrics.json`
+- `outputs/c6_full_v1/official_val/by_epoch/epoch_metrics.csv`
+- MLflow metrics `official_epoch_map` and `official_epoch_nds`
+
+The runner deletes each large intermediate `results_nusc.json` after its metric
+summary is complete, while preserving checkpoints, evaluator summaries, plots,
+and logs. It is resumable and skips completed epoch metric directories.
