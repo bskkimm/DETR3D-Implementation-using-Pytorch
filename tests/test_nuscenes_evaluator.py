@@ -145,6 +145,29 @@ def test_lidar_predictions_transform_to_global():
     )
 
 
+def test_lidar_conversion_normalizes_pose_quaternions():
+    tables = _tables(lidar_yaw=0.7, ego_yaw=-0.2)
+    for records in (
+        tables.calibrated_sensor_by_token,
+        tables.ego_pose_by_token,
+    ):
+        record = next(iter(records.values()))
+        record["rotation"] = [value * 1.001 for value in record["rotation"]]
+
+    converted = lidar_predictions_to_nuscenes(
+        sample_token="sample",
+        boxes_lidar=torch.tensor(
+            [[0.0, 0.0, 0.0, 1.0, 2.0, 1.0, 0.3, 0.0, 0.0]]
+        ),
+        scores=torch.tensor([0.5]),
+        labels=torch.tensor([0]),
+        tables=tables,
+        class_range={"car": 50.0},
+    )
+
+    assert np.linalg.norm(converted[0]["rotation"]) == pytest.approx(1.0)
+
+
 def test_class_range_uses_ego_center():
     boxes = torch.tensor([[35.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]])
     ranges = {"car": 50.0, "traffic_cone": 30.0}

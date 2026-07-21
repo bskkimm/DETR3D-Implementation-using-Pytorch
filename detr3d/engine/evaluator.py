@@ -14,7 +14,6 @@ from pyquaternion import Quaternion
 from detr3d.data.nuscenes_dataset import (
     NUSCENES_CLASSES,
     NuScenesTables,
-    pose_to_matrix,
 )
 from detr3d.models.losses.loss_utils import decode_bbox_predictions
 
@@ -76,15 +75,6 @@ def prediction_attribute(detection_name: str, velocity_xy: Sequence[float]) -> s
     return DEFAULT_ATTRIBUTES[detection_name]
 
 
-def _yaw_rotation(yaw: float) -> np.ndarray:
-    cosine = math.cos(yaw)
-    sine = math.sin(yaw)
-    return np.asarray(
-        [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
-        dtype=np.float64,
-    )
-
-
 def lidar_predictions_to_nuscenes(
     *,
     sample_token: str,
@@ -101,12 +91,14 @@ def lidar_predictions_to_nuscenes(
         lidar_record["calibrated_sensor_token"]
     ]
     ego_pose = tables.ego_pose_by_token[lidar_record["ego_pose_token"]]
-    lidar_to_ego = pose_to_matrix(
-        calibrated["rotation"], calibrated["translation"]
-    ).astype(np.float64)
-    ego_to_global = pose_to_matrix(
-        ego_pose["rotation"], ego_pose["translation"]
-    ).astype(np.float64)
+    lidar_rotation = Quaternion(calibrated["rotation"])
+    ego_rotation = Quaternion(ego_pose["rotation"])
+    lidar_to_ego = np.eye(4, dtype=np.float64)
+    lidar_to_ego[:3, :3] = lidar_rotation.rotation_matrix
+    lidar_to_ego[:3, 3] = np.asarray(calibrated["translation"], dtype=np.float64)
+    ego_to_global = np.eye(4, dtype=np.float64)
+    ego_to_global[:3, :3] = ego_rotation.rotation_matrix
+    ego_to_global[:3, 3] = np.asarray(ego_pose["translation"], dtype=np.float64)
     lidar_to_global = ego_to_global @ lidar_to_ego
 
     records = []
@@ -124,8 +116,8 @@ def lidar_predictions_to_nuscenes(
             continue
 
         center_global = lidar_to_global @ center_lidar
-        rotation_global = lidar_to_global[:3, :3] @ _yaw_rotation(float(box[6]))
-        quaternion = Quaternion(matrix=rotation_global).elements
+        box_rotation = Quaternion(axis=[0.0, 0.0, 1.0], radians=float(box[6]))
+        quaternion = (ego_rotation * lidar_rotation * box_rotation).normalised.elements
         velocity_global = lidar_to_global[:3, :3] @ np.asarray(
             [box[7], box[8], 0.0], dtype=np.float64
         )
