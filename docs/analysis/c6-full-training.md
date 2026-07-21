@@ -1,6 +1,6 @@
 # C6 Full Training
 
-Status: Running
+Status: Completed
 
 Branch: `exp/c6-full-training`
 
@@ -13,6 +13,8 @@ tmux session: `detr3d-c6-full`
 MLflow run: `da5c0f1ff86b4705aa600c2c3794c0ba`
 
 Output: `outputs/c6_full_v1`
+
+Completed: 2026-07-21 05:07 JST
 
 ## Decision
 
@@ -141,9 +143,28 @@ epochs 15-24 and continues the original MLflow run.
   --dataroot /home/beomseokkim2/dataset/nuscenes \
   --version v1.0-trainval \
   --dataset-split val \
-  --nuscenes-results-out outputs/c6_full_v1/official_val/results_nusc.json \
+  --nuscenes-results-out outputs/c6_full_v1/official_val/final/results_nusc.json \
   --run-nuscenes-eval \
   --nuscenes-eval-set val \
-  --nuscenes-eval-output-dir outputs/c6_full_v1/official_val/metrics \
+  --nuscenes-eval-output-dir outputs/c6_full_v1/official_val/final/metrics \
   --device cuda
 ```
+
+## Results
+
+| Checkpoint | mAP | NDS | mATE | mASE | mAOE | mAVE | mAAE |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Upstream base R101 | 34.7 | 42.2 | - | - | - | - | - |
+| Epoch 18 diagnostic best | 33.98 | 41.37 | 0.7833 | 0.2734 | 0.4157 | 0.8850 | 0.2048 |
+| Epoch 24 final | **34.58** | **42.15** | **0.7687** | **0.2711** | **0.4007** | **0.8664** | 0.2070 |
+
+The epoch-24 final checkpoint reproduces the upstream base result within 0.12
+mAP points and 0.05 NDS points. It is the promoted checkpoint. Epoch 18 had the
+best nearest-center result on the fixed 512-sample diagnostic subset, but full
+official evaluation shows that this proxy selected a worse checkpoint: epoch
+24 improves mAP by 0.61 points and NDS by 0.79 points.
+
+Training loss decreased from 11.8194 to 4.3799, classification loss from 0.7558
+to 0.2162, and box loss from 1.0772 to 0.4554. Fixed-subset mean center distance
+decreased from 2.2059 m to 1.3812 m. The final validation overlays use correct
+Caffe/BGR denormalization and a display-only score threshold of 0.3.
